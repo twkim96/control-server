@@ -1,0 +1,62 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.env
+.env.local
+
+# Node
+node_modules/
+frontend/dist/
+.npm/
+*.log
+
+# Vite local env
+.env.development.local
+.env.production.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+
+# Runtime artifacts
+backend/config.yml
+backend/logs/*
+!backend/logs/.gitkeep
+backend/runtime/*
+!backend/runtime/.gitkeep
+backend/runtime/.secret_key
+
+# launchd secrets
+launchd/run.env
+backend/logs/_launchd.*
+
+# Backups created by config_writer
+backend/config.yml.bak
+backend/config.yml.bak.*
+backend/config.yml.pre-*
+
+# Local smoke check scripts (not committed)
+backend/_smoke_*.py
+backend/_bad_*.yml
+backend/_dup*.yml
+
+# Pytest cache
+.pytest_cache/
+
+# Local commit message scratch
+.commit_msg.tmp
+.commit_msg*.tmp
+COMMIT_EDITMSG.txt
+
+# Local planning notes, release retrospectives, and machine-specific deploy tools
+phase.md
+todo.md
+update_*.md
+scripts/*_deploy.py

@@ -1,0 +1,121 @@
+.drawerOverlay {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: flex;
+  justify-content: flex-end;
+  background-color: rgba(0, 0, 0, 0.45);
+}
+
+.drawerCard {
+  background-color: var(--bg-canvas);
+  border-left: 1px solid var(--border-default);
+  width: min(720px, 90vw);
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: var(--shadow-elevated);
+}
+
+.drawerHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-4) var(--space-5);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.drawerTitle {
+  font-size: var(--font-md);
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.drawerSub {
+  margin-top: 2px;
+  font-size: var(--font-xs);
+  color: var(--text-muted);
+}
+
+.drawerActions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.drawerBody {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.terminal {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-3) var(--space-4);
+  background-color: #06080b;
+  color: #d3d8e0;
+  font-family: var(--font-mono);
+  font-size: var(--font-xs);
+  line-height: 1.55;
+  white-space: pre;
+  -webkit-overflow-scrolling: touch;
+}
+
+.terminalLine {
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.terminalEmpty {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.connectionPill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--font-xs);
+  color: var(--text-muted);
+}
+
+.connectionDot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background-color: var(--status-stopped);
+}
+
+.connectionDot.connected {
+  background-color: var(--status-running);
+}
+
+.connectionDot.disconnected {
+  background-color: var(--status-unhealthy);
+}
+
+@media (max-width: 640px) {
+  .drawerCard {
+    width: 100vw;
+    border-left: none;
+  }
+
+  .drawerHeader {
+    align-items: flex-start;
+    flex-direction: column;
+    padding: var(--space-4);
+  }
+
+  .drawerActions {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+
+  .terminal {
+    padding: var(--space-3);
+  }
+}

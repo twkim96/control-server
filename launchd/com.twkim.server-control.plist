@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  컨트롤 서버용 LaunchAgent 템플릿.
+  install.sh가 이 파일을 읽어 비밀값을 주입한 뒤 ~/Library/LaunchAgents/에 설치한다.
+  이 파일 자체는 비밀값이 들어있지 않아 git에 그대로 둔다.
+
+  치환 토큰:
+    @@REPO_ROOT@@      : 레포 루트 절대경로
+    @@PYTHON@@         : .venv 안 python 절대경로
+    @@CONFIG@@         : 사용할 config.yml 절대경로
+    @@CONTROL_PASSWORD@@: 인스톨러가 환경에서 가져와 주입
+    @@CONTROL_SECRET@@  : (선택) 같은 방식
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.twkim.server-control</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>@@PYTHON@@</string>
+        <string>@@REPO_ROOT@@/backend/app.py</string>
+        <string>--config</string>
+        <string>@@CONFIG@@</string>
+        <string>--server</string>
+        <string>waitress</string>
+        <string>--log-level</string>
+        <string>INFO</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>@@REPO_ROOT@@</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PYTHONUNBUFFERED</key>
+        <string>1</string>
+        <key>CONTROL_PASSWORD</key>
+        <string>@@CONTROL_PASSWORD@@</string>
+        <key>CONTROL_SECRET_KEY</key>
+        <string>@@CONTROL_SECRET@@</string>
+        <!-- macOS launchd의 기본 PATH는 /usr/bin:/bin:/usr/sbin:/sbin 뿐이라
+             Homebrew의 python 등 사용자 도구를 못 찾는다. 자식 프로세스에도 그대로
+             상속되므로 여기서 한 번에 늘려둔다. install.sh가 sed로 치환하지 않는
+             고정값이라 그대로 git에 둠. -->
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>@@REPO_ROOT@@/backend/logs/_launchd.out</string>
+    <key>StandardErrorPath</key>
+    <string>@@REPO_ROOT@@/backend/logs/_launchd.err</string>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>

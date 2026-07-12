@@ -1,0 +1,552 @@
+/* ===== Page layout ===== */
+
+.page {
+  max-width: var(--content-max-width);
+  margin: 0 auto;
+  padding: var(--space-10) var(--space-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+
+.header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+
+.title {
+  font-size: var(--font-2xl);
+  font-weight: 700;
+  letter-spacing: 0;
+}
+
+.subtitle {
+  margin-top: var(--space-1);
+  color: var(--text-secondary);
+  font-size: var(--font-md);
+}
+
+.headerActions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+/* ===== Toolbar ===== */
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.searchBox {
+  flex: 1 1 320px;
+  min-width: 220px;
+}
+
+.countPill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: 2rem;
+  padding: 0 var(--space-3);
+  border-radius: 999px;
+  background-color: var(--bg-surface-2);
+  color: var(--text-secondary);
+  font-size: var(--font-sm);
+}
+
+.countRunning {
+  color: var(--status-running);
+}
+
+/* ===== Table shell ===== */
+
+.tableCard {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  background-color: var(--bg-surface);
+}
+
+.tableHeader {
+  border-top-left-radius: var(--radius-lg);
+  border-top-right-radius: var(--radius-lg);
+}
+
+.tableRow:last-of-type:not(.expanded) {
+  border-bottom-left-radius: var(--radius-lg);
+  border-bottom-right-radius: var(--radius-lg);
+}
+
+.tableHeader,
+.tableRow {
+  display: grid;
+  grid-template-columns:
+    minmax(200px, 1.6fr)
+    minmax(120px, 0.9fr)
+    minmax(140px, 1fr)
+    minmax(140px, 1fr)
+    44px;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-5);
+}
+
+.tableHeader {
+  font-size: var(--font-xs);
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0;
+  border-bottom: 1px solid var(--border-subtle);
+  background-color: var(--bg-surface);
+}
+
+.tableRow {
+  border-bottom: 1px solid var(--border-subtle);
+  cursor: pointer;
+  transition: background-color 0.1s ease;
+}
+
+.dragging {
+  opacity: 0.55;
+}
+
+.dropBefore {
+  box-shadow: inset 0 2px 0 var(--accent);
+}
+
+.dropAfter {
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+.tableRow:last-child {
+  border-bottom: none;
+}
+
+.tableRow:hover {
+  background-color: var(--bg-row-hover);
+}
+
+.tableRow.expanded {
+  background-color: var(--bg-row-hover);
+  border-bottom-color: var(--border-default);
+}
+
+/* ===== Cell content ===== */
+
+.cellService {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.cellServiceText {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.cellServiceName {
+  font-weight: 600;
+  font-size: var(--font-lg);
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cellServiceMeta {
+  margin-top: var(--space-1);
+  font-size: var(--font-sm);
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cellPort {
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: var(--font-md);
+  color: var(--text-primary);
+}
+
+.cellPortLine {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.cellPortMeta {
+  font-size: var(--font-sm);
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cellRuntime {
+  display: flex;
+  flex-direction: column;
+  font-size: var(--font-md);
+  color: var(--text-primary);
+}
+
+.cellRuntimeMain {
+  font-family: var(--font-mono);
+}
+
+.cellRuntimeSub {
+  margin-top: var(--space-1);
+  font-family: var(--font-mono);
+  font-size: var(--font-sm);
+  color: var(--text-muted);
+}
+
+.cellStatus {
+  display: flex;
+  flex-direction: column;
+  font-size: var(--font-md);
+}
+
+.cellStatusSub {
+  margin-top: var(--space-1);
+  font-size: var(--font-sm);
+  color: var(--text-muted);
+}
+
+.cellTrailing {
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* 모바일에서 trailing 옆에 작은 status dot만 보여주는 셀 (데스크톱에서는 숨김) */
+.cellStatusMobile {
+  display: none;
+}
+
+/* ===== Status dot ===== */
+
+.statusGroup {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.statusDot {
+  width: 0.625rem;
+  height: 0.625rem;
+  border-radius: 50%;
+  background-color: var(--status-unknown);
+}
+
+.statusLabel {
+  color: var(--text-primary);
+}
+
+.dot_running {
+  background-color: var(--status-running);
+  box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.18);
+}
+.dot_running_external {
+  /* 옅은 초록 + 점선 ring으로 "외부 인스턴스" 구분 */
+  background-color: var(--status-running);
+  box-shadow: 0 0 0 2px rgba(34, 197, 94, 0.18);
+  outline: 1px dashed var(--status-running);
+  outline-offset: 2px;
+}
+.dot_stopped {
+  background-color: var(--status-stopped);
+}
+.dot_starting,
+.dot_stopping {
+  background-color: var(--status-starting);
+  animation: pulse 1.4s ease-in-out infinite;
+}
+.dot_unhealthy {
+  background-color: var(--status-unhealthy);
+  box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.18);
+}
+.dot_unknown {
+  background-color: var(--status-unknown);
+}
+
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
+}
+
+/* ===== Expanded details panel ===== */
+
+.detailsPanel {
+  padding: var(--space-5);
+  background-color: var(--bg-surface);
+  border-bottom: 1px solid var(--border-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.detailsActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.detailsGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: var(--space-4);
+  font-size: var(--font-sm);
+}
+
+.detailLabel {
+  color: var(--text-muted);
+  text-transform: uppercase;
+  font-size: var(--font-xs);
+  letter-spacing: 0;
+  margin-bottom: var(--space-1);
+}
+
+.detailValue {
+  font-family: var(--font-mono);
+  color: var(--text-primary);
+  word-break: break-all;
+}
+
+.detailValueMuted {
+  color: var(--text-secondary);
+}
+
+.externalNotice {
+  padding: var(--space-3) var(--space-4);
+  background-color: rgba(34, 197, 94, 0.08);
+  border: 1px solid rgba(34, 197, 94, 0.3);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+  font-size: var(--font-sm);
+  line-height: 1.5;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+
+/* External kill modal — components의 modalOverlay/modalCard를 재사용 */
+.modalOverlay {
+  position: fixed;
+  inset: 0;
+  background-color: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+  padding: var(--space-4);
+}
+
+.modalCard {
+  background-color: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-elevated);
+  min-width: 360px;
+  max-width: min(560px, calc(100vw - 32px));
+  display: flex;
+  flex-direction: column;
+}
+
+.modalHeader {
+  padding: var(--space-5) var(--space-5) var(--space-2);
+  font-size: var(--font-lg);
+  font-weight: 600;
+}
+
+.modalBody {
+  padding: var(--space-2) var(--space-5) var(--space-5);
+  color: var(--text-primary);
+  font-size: var(--font-sm);
+  line-height: 1.55;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.modalParagraph {
+  margin: 0;
+}
+
+.modalParagraphMuted {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--font-xs);
+}
+
+.modalKv {
+  display: grid;
+  grid-template-columns: 80px 1fr auto;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  background-color: var(--bg-input);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+}
+
+.modalKvLabel {
+  color: var(--text-muted);
+  font-size: var(--font-xs);
+}
+
+.modalKvValue {
+  font-family: var(--font-mono);
+  color: var(--text-primary);
+  font-size: var(--font-sm);
+  word-break: break-all;
+}
+
+.modalCopyBtn {
+  height: var(--control-height-sm);
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-sm);
+  background-color: transparent;
+  color: var(--text-secondary);
+  font-size: var(--font-xs);
+  border: 1px solid var(--border-default);
+  cursor: pointer;
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+.modalCopyBtn:hover:not(:disabled) {
+  background-color: var(--bg-row-hover);
+  color: var(--text-primary);
+}
+
+.modalCopyBtn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.modalFooter {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-5);
+  border-top: 1px solid var(--border-subtle);
+}
+
+.detailHealthOk {
+  color: var(--status-running);
+}
+
+.detailHealthBad {
+  color: var(--status-unhealthy);
+}
+
+/* ===== Loading / empty ===== */
+
+.loadingBar {
+  height: 2px;
+  background-color: var(--accent);
+  opacity: 0.4;
+  animation: pulse 1.2s ease-in-out infinite;
+}
+
+@media (max-width: 760px) {
+  .page {
+    padding: var(--space-6) var(--space-4);
+  }
+
+  .header {
+    flex-direction: column;
+  }
+
+  .headerActions,
+  .toolbar {
+    width: 100%;
+  }
+
+  .searchBox {
+    flex-basis: 100%;
+    min-width: 0;
+  }
+
+  .tableCard {
+    overflow: hidden;
+  }
+
+  .tableHeader {
+    display: none;
+  }
+
+  .tableRow {
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    align-items: center;
+    gap: var(--space-2);
+    padding: var(--space-3) var(--space-3);
+  }
+
+  .cellService {
+    grid-column: 1 / 2;
+  }
+
+  /* 모바일에서는 한 줄에 [이름 | 상태 dot | 더보기]만 보여준다.
+     PORT/URL/RUNTIME/STATUS 라벨은 행을 부풀리므로 펼침 패널로 모은다. */
+  .cellPort,
+  .cellRuntime,
+  .cellStatus {
+    display: none;
+  }
+
+  .cellStatusMobile {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    grid-column: 2 / 3;
+    grid-row: 1;
+    align-self: center;
+  }
+
+  .cellTrailing {
+    grid-column: 3 / 4;
+    grid-row: 1;
+    align-self: center;
+  }
+
+  .detailsPanel {
+    padding: var(--space-4);
+  }
+
+  .detailsGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .externalNotice {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .modalCard {
+    min-width: 0;
+    width: min(100%, 36rem);
+  }
+
+  .modalKv {
+    grid-template-columns: 1fr auto;
+  }
+
+  .modalKvLabel,
+  .modalKvValue {
+    grid-column: 1 / -1;
+  }
+}

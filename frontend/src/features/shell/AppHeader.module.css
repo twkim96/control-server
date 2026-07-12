@@ -1,0 +1,149 @@
+.shell {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  background-color: var(--bg-canvas);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.topBar {
+  /* "Server Control" 행과 탭 행 사이 구분선은 두지 않는다. 시각적으로 한 덩어리로 보이게. */
+}
+
+.topInner,
+.navBar {
+  max-width: var(--content-max-width);
+  margin: 0 auto;
+  padding: 0 var(--space-6);
+}
+
+.topInner {
+  min-height: var(--header-top-height);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-5);
+}
+
+.brand,
+.brand:hover,
+.brand:focus,
+.brand:active {
+  color: var(--text-primary);
+}
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  font-size: var(--font-2xl);
+  text-decoration: none;
+}
+
+.brandDot {
+  width: 0.75rem;
+  height: 0.75rem;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background-color: var(--accent);
+}
+
+.navBar {
+  min-height: var(--header-nav-height);
+  display: flex;
+  align-items: stretch;
+  overflow-x: auto;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+}
+
+.navBar::-webkit-scrollbar {
+  display: none;
+}
+
+.tabs {
+  display: flex;
+  align-items: stretch;
+  gap: var(--space-1);
+  min-width: max-content;
+}
+
+.tab {
+  display: inline-flex;
+  align-items: center;
+  height: var(--header-nav-height);
+  padding: 0 var(--space-3);
+  font-size: var(--font-sm);
+  font-weight: 600;
+  color: var(--text-secondary);
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  transition: color 0.12s ease, border-color 0.12s ease, background-color 0.12s ease;
+}
+
+.tab:hover {
+  color: var(--text-primary);
+  background-color: var(--bg-surface);
+}
+
+.tabActive {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+.right {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  min-width: 0;
+  color: var(--text-secondary);
+  font-size: var(--font-sm);
+}
+
+.metricLabel {
+  flex: 0 0 auto;
+  color: var(--text-muted);
+  font-size: var(--font-xs);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.metric {
+  flex: 0 0 auto;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+}
+
+@media (max-width: 640px) {
+  .topInner,
+  .navBar {
+    padding: 0 var(--space-4);
+  }
+
+  .topInner {
+    gap: var(--space-3);
+  }
+
+  .brand {
+    font-size: var(--font-xl);
+    gap: var(--space-2);
+  }
+
+  .right {
+    gap: var(--space-1);
+    font-size: var(--font-xs);
+  }
+
+  .metricLabel {
+    display: none;
+  }
+
+  .tab {
+    padding: 0 var(--space-3);
+  }
+}

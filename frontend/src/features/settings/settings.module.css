@@ -1,0 +1,253 @@
+.page {
+  max-width: var(--content-max-width);
+  margin: 0 auto;
+  padding: var(--space-10) var(--space-6);
+}
+
+.section {
+  display: flex;
+  flex-direction: column;
+  /* 직계 자식 간격은 0으로 두고, 각 요소에 명시적 margin으로 조절. */
+  gap: 0;
+}
+
+.sectionHeader {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--space-4);
+  margin-bottom: var(--space-4);
+}
+
+.sectionActions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+/* sectionHeader 영역의 우측 끝에 겹쳐서 떠있는 프리셋 바.
+   세로 공간을 차지하지 않으므로 Settings <-> 박스 거리는 기존과 동일하게 유지된다.
+   negative margin-bottom으로 자기 높이만큼 위로 끌어당겨 헤더 줄에 맞춘다. */
+.presetBar {
+  max-width: 44rem;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 2px;
+  /* 자기 자신이 추가하는 세로 공간을 모두 상쇄. 버튼 높이(약 1.75rem) 정도. */
+  margin-top: calc(-1 * var(--control-height-sm, 1.75rem));
+  margin-bottom: var(--space-2);
+  /* 헤더 영역 위에 떠있을 때 클릭 안정성을 위해 z-index */
+  position: relative;
+  z-index: 1;
+}
+
+.sectionTitle {
+  font-size: var(--font-xl);
+  font-weight: 700;
+  letter-spacing: 0;
+}
+
+.sectionSub {
+  margin-top: var(--space-1);
+  color: var(--text-secondary);
+  font-size: var(--font-md);
+}
+
+.panel {
+  max-width: 44rem;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  background-color: var(--bg-surface);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.colorList {
+  display: flex;
+  flex-direction: column;
+}
+
+.colorRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding: var(--space-5);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.colorText {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.colorLabel {
+  color: var(--text-primary);
+  font-size: var(--font-md);
+  font-weight: 600;
+}
+
+.colorDescription {
+  color: var(--text-muted);
+  font-size: var(--font-sm);
+}
+
+.colorControl {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex: 0 0 auto;
+}
+
+.colorValue {
+  min-width: 5.25rem;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: var(--font-sm);
+  text-align: right;
+}
+
+.colorHexInput {
+  width: 6rem;
+  padding: 0.25rem var(--space-2);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background-color: transparent;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: var(--font-sm);
+  text-align: right;
+  transition: border-color 0.12s ease, background-color 0.12s ease;
+}
+
+.colorHexInput:hover {
+  border-color: var(--border-subtle);
+}
+
+.colorHexInput:focus {
+  outline: none;
+  border-color: var(--accent);
+  background-color: var(--bg-input);
+  color: var(--text-primary);
+}
+
+.colorInput {
+  width: var(--control-height-lg);
+  height: var(--control-height-lg);
+  padding: 0.25rem;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background-color: var(--bg-input);
+  cursor: pointer;
+}
+
+.preview {
+  display: flex;
+  gap: var(--space-2);
+  padding: var(--space-5);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.previewCanvas,
+.previewText,
+.previewAccent {
+  height: 1rem;
+  border: 1px solid var(--border-default);
+}
+
+.previewCanvas {
+  width: 7rem;
+  border-radius: 999px 0 0 999px;
+}
+
+.previewText {
+  width: 3rem;
+}
+
+.previewAccent {
+  width: 3rem;
+  border-radius: 0 999px 999px 0;
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  padding: var(--space-4) var(--space-5);
+}
+
+@media (max-width: 640px) {
+  .page {
+    padding: var(--space-6) var(--space-4);
+  }
+
+  .panel {
+    max-width: none;
+  }
+
+  .colorRow,
+  .actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .colorControl {
+    justify-content: space-between;
+  }
+
+  .colorValue {
+    text-align: left;
+  }
+
+  .colorHexInput {
+    text-align: left;
+    flex: 1 1 auto;
+  }
+}
+
+
+/* ===== Preset list (load modal) ===== */
+
+.presetList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.presetItem {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border-radius: var(--radius-md);
+  border: 2px solid transparent;
+  background-color: var(--bg-surface);
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.12s ease, background-color 0.12s ease;
+}
+
+.presetItem:hover {
+  background-color: var(--bg-row-hover);
+}
+
+.presetItemActive {
+  border-color: var(--accent);
+}
+
+.presetName {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--text-primary);
+  font-size: var(--font-md);
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

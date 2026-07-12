@@ -1,0 +1,282 @@
+.page {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: var(--space-8) var(--space-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+.header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.title {
+  font-size: var(--font-xl);
+  font-weight: 700;
+  letter-spacing: 0;
+}
+
+.subtitle {
+  margin-top: var(--space-1);
+  color: var(--text-secondary);
+  font-size: var(--font-sm);
+}
+
+.section {
+  background-color: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  padding: var(--space-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.sectionTitle {
+  font-size: var(--font-xs);
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.fieldRow {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-3);
+}
+
+.label {
+  font-size: var(--font-sm);
+  color: var(--text-secondary);
+}
+
+.help {
+  font-size: var(--font-xs);
+  color: var(--text-muted);
+}
+
+.error {
+  color: var(--danger);
+  font-size: var(--font-xs);
+  font-family: var(--font-mono);
+  white-space: pre-wrap;
+}
+
+.checkboxRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--font-sm);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.checkboxRow input[type="checkbox"] {
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.envItem {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto;
+  gap: var(--space-2);
+}
+
+.envEmpty {
+  color: var(--text-muted);
+  font-size: var(--font-sm);
+  font-style: italic;
+}
+
+.actions {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.actionsRight {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.commandRow {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+.commandRow .input {
+  flex: 1;
+}
+
+.segmented {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 3px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background-color: var(--bg-muted);
+  width: fit-content;
+}
+
+.actionsList {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: var(--space-2);
+}
+
+/* Path picker dialog */
+.pickerOverlay {
+  position: fixed;
+  inset: 0;
+  background-color: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+  padding: var(--space-4);
+}
+
+.pickerCard {
+  width: min(640px, calc(100vw - 32px));
+  max-height: 80vh;
+  background-color: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  display: flex;
+  flex-direction: column;
+  box-shadow: var(--shadow-elevated);
+}
+
+.pickerHeader {
+  padding: var(--space-4) var(--space-5);
+  font-size: var(--font-md);
+  font-weight: 600;
+  border-bottom: 1px solid var(--border-subtle);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.pickerCrumbs {
+  font-family: var(--font-mono);
+  font-size: var(--font-xs);
+  color: var(--text-muted);
+  padding: var(--space-2) var(--space-5);
+  border-bottom: 1px solid var(--border-subtle);
+  white-space: nowrap;
+  overflow-x: auto;
+}
+
+.pickerBody {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--space-2);
+}
+
+.pickerEntry {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  text-align: left;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: var(--font-sm);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.pickerEntry:hover {
+  background-color: var(--bg-row-hover);
+}
+
+.pickerEntry.dir {
+  font-weight: 600;
+}
+
+.pickerEntry.disabled {
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+
+.pickerFooter {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: var(--space-3) var(--space-5);
+  border-top: 1px solid var(--border-subtle);
+}
+
+.pickerSelected {
+  font-family: var(--font-mono);
+  font-size: var(--font-xs);
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-right: var(--space-3);
+}
+
+@media (max-width: 640px) {
+  .page {
+    max-width: none;
+    padding: var(--space-6) var(--space-4);
+  }
+
+  .header,
+  .actions,
+  .actionsRight,
+  .commandRow,
+  .segmented,
+  .pickerFooter {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .fieldRow,
+  .envItem {
+    grid-template-columns: 1fr;
+  }
+
+  .section {
+    padding: var(--space-4);
+  }
+
+  .pickerOverlay {
+    align-items: flex-start;
+    padding: max(var(--space-4), env(safe-area-inset-top))
+      max(var(--space-4), env(safe-area-inset-right))
+      max(var(--space-4), env(safe-area-inset-bottom))
+      max(var(--space-4), env(safe-area-inset-left));
+  }
+
+  .pickerCard {
+    width: 100%;
+    max-height: calc(100vh - var(--space-8));
+  }
+
+  .pickerHeader,
+  .pickerCrumbs,
+  .pickerFooter {
+    padding-right: var(--space-4);
+    padding-left: var(--space-4);
+  }
+
+  .pickerSelected {
+    margin-right: 0;
+  }
+}

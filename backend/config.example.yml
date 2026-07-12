@@ -1,0 +1,19 @@
+# Copy this file to config.yml and adjust it for the local machine.
+# config.yml is intentionally ignored because it contains machine-specific
+# paths, service inventories, private network addresses, and certificate paths.
+
+controller:
+  host: "127.0.0.1"
+  port: 9000
+  editable_config: true
+  allowed_path_roots:
+    - "/path/to/projects"
+  auth:
+    type: "password"
+    password_env: "CONTROL_PASSWORD"
+
+# Services can also be registered from the web UI.
+services: []
+
+# One-shot action groups are optional.
+actions: []

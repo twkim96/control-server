@@ -1,0 +1,350 @@
+/* ===== Button ===== */
+
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  min-height: var(--control-height-md);
+  padding: 0 var(--space-4);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-default);
+  background-color: var(--bg-surface-2);
+  color: var(--text-primary);
+  font-weight: 500;
+  font-size: var(--font-md);
+  cursor: pointer;
+  transition: background-color 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+  white-space: nowrap;
+}
+
+.button:hover:not(:disabled) {
+  background-color: var(--bg-row-hover);
+  border-color: var(--border-strong);
+}
+
+.button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.button.primary {
+  background-color: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-on);
+}
+
+.button.primary:hover:not(:disabled) {
+  background-color: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+
+.button.danger {
+  background-color: transparent;
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.button.danger:hover:not(:disabled) {
+  background-color: var(--danger-soft);
+}
+
+.button.ghost {
+  background-color: transparent;
+  border-color: transparent;
+  color: var(--text-secondary);
+}
+
+.button.ghost:hover:not(:disabled) {
+  background-color: var(--bg-row-hover);
+  color: var(--text-primary);
+}
+
+.button.sm {
+  min-height: var(--control-height-sm);
+  padding: 0 var(--space-3);
+  font-size: var(--font-sm);
+}
+
+.button.lg {
+  min-height: var(--control-height-lg);
+  padding: 0 var(--space-5);
+  font-size: var(--font-lg);
+}
+
+/* ===== IconButton ===== */
+
+.iconButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--icon-button-size);
+  height: var(--icon-button-size);
+  border-radius: var(--radius-md);
+  background-color: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+.iconButton:hover:not(:disabled) {
+  background-color: var(--bg-row-hover);
+  color: var(--text-primary);
+}
+
+.iconButton:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* ===== Dropdown ===== */
+
+.dropdownWrap {
+  position: relative;
+  display: inline-block;
+}
+
+.dropdownMenu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  min-width: 180px;
+  background-color: var(--bg-surface-2);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-elevated);
+  padding: var(--space-1);
+  z-index: 50;
+}
+
+.dropdownItem {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-height: var(--control-height-sm);
+  padding: 0 var(--space-3);
+  border-radius: var(--radius-sm);
+  font-size: var(--font-sm);
+  color: var(--text-primary);
+  cursor: pointer;
+  text-align: left;
+}
+
+.dropdownItem:hover:not(:disabled) {
+  background-color: var(--bg-row-hover);
+}
+
+.dropdownItem:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.dropdownItem.danger {
+  color: var(--danger);
+}
+
+.dropdownDivider {
+  height: 1px;
+  background-color: var(--border-subtle);
+  margin: var(--space-1) 0;
+}
+
+/* ===== Modal / ConfirmDialog ===== */
+
+.modalOverlay {
+  position: fixed;
+  inset: 0;
+  background-color: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+  padding: var(--space-4);
+}
+
+.modalCard {
+  background-color: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-elevated);
+  min-width: 360px;
+  max-width: min(560px, calc(100vw - 32px));
+  display: flex;
+  flex-direction: column;
+}
+
+.modalHeader {
+  padding: var(--space-5) var(--space-5) var(--space-2);
+  font-size: var(--font-lg);
+  font-weight: 600;
+}
+
+.modalBody {
+  padding: var(--space-2) var(--space-5) var(--space-5);
+  color: var(--text-secondary);
+  font-size: var(--font-sm);
+  line-height: 1.5;
+}
+
+.modalFooter {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-5);
+  border-top: 1px solid var(--border-subtle);
+}
+
+/* ===== Input ===== */
+
+.input {
+  min-height: var(--control-height-md);
+  width: 100%;
+  padding: 0 var(--space-3);
+  background-color: var(--bg-input);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+  font-size: var(--font-md);
+  transition: border-color 0.12s ease;
+}
+
+.input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.input::placeholder {
+  color: var(--text-muted);
+}
+
+.inputWithIcon {
+  position: relative;
+}
+
+.inputWithIcon .input {
+  padding-left: var(--space-8);
+}
+
+.inputIcon {
+  position: absolute;
+  left: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--text-muted);
+  pointer-events: none;
+  display: flex;
+}
+
+/* ===== Toast ===== */
+
+.toastContainer {
+  position: fixed;
+  bottom: var(--space-5);
+  right: var(--space-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  z-index: 200;
+}
+
+.toast {
+  background-color: var(--bg-surface-2);
+  border: 1px solid var(--border-default);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius-md);
+  padding: var(--space-3) var(--space-4);
+  font-size: var(--font-sm);
+  color: var(--text-primary);
+  box-shadow: var(--shadow-elevated);
+  max-width: 360px;
+}
+
+.toast.error {
+  border-left-color: var(--danger);
+}
+
+.toast.success {
+  border-left-color: var(--status-running);
+}
+
+@media (max-width: 540px) {
+  .modalOverlay {
+    align-items: flex-start;
+    padding: max(var(--space-4), env(safe-area-inset-top))
+      max(var(--space-4), env(safe-area-inset-right))
+      max(var(--space-4), env(safe-area-inset-bottom))
+      max(var(--space-4), env(safe-area-inset-left));
+  }
+
+  .modalCard {
+    min-width: 0;
+    width: 100%;
+    max-height: calc(100vh - var(--space-8));
+  }
+
+  .modalFooter {
+    flex-wrap: wrap;
+  }
+
+  .toastContainer {
+    right: var(--space-4);
+    bottom: var(--space-4);
+    left: var(--space-4);
+  }
+
+  .toast {
+    max-width: none;
+  }
+}
+
+/* ===== Spinner ===== */
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.spinner {
+  display: inline-block;
+  width: 1rem;
+  height: 1rem;
+  border: 2px solid var(--border-default);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+/* ===== EmptyState ===== */
+
+.empty {
+  text-align: center;
+  padding: var(--space-12) var(--space-5);
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+
+/* ===== ReorderControls ===== */
+
+.reorderControls {
+  display: inline-flex;
+  align-items: center;
+}
+
+.reorderControls .iconButton {
+  width: 1.6rem;
+  height: 1.6rem;
+  cursor: grab;
+  touch-action: none;
+}
+
+.reorderControlsMd .iconButton {
+  width: 2rem;
+  height: 2rem;
+}
+
+.reorderControls .iconButton:active,
+.reorderDragging {
+  cursor: grabbing;
+}
