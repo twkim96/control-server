@@ -58,8 +58,12 @@ render_plist() {
     # @@토큰@@을 실제 값으로 치환. PASSWORD 안의 '/' 같은 문자도 안전하게 처리하기 위해
     # python을 사용한다.
     "$PYTHON" - "$TEMPLATE" "$REPO_ROOT" "$PYTHON" "$CONFIG_FILE" "$pw" "$secret" <<'PY' > "$PLIST_DST"
-import sys, html
+import os, sys, html
 template_path, repo, py, cfg, pw, secret = sys.argv[1:7]
+novelpia_email = os.environ.get("FILE_CHECK_NOVELPIA_EMAIL", "")
+novelpia_password = os.environ.get("FILE_CHECK_NOVELPIA_PASSWORD", "")
+google_credentials = os.environ.get("FILE_CHECK_GOOGLE_CREDENTIALS", "")
+google_spreadsheet_id = os.environ.get("FILE_CHECK_GOOGLE_SPREADSHEET_ID", "")
 with open(template_path, "r", encoding="utf-8") as f:
     text = f.read()
 text = (text
@@ -67,7 +71,11 @@ text = (text
     .replace("@@PYTHON@@", py)
     .replace("@@CONFIG@@", cfg)
     .replace("@@CONTROL_PASSWORD@@", html.escape(pw, quote=False))
-    .replace("@@CONTROL_SECRET@@", html.escape(secret, quote=False)))
+    .replace("@@CONTROL_SECRET@@", html.escape(secret, quote=False))
+    .replace("@@NOVELPIA_EMAIL@@", html.escape(novelpia_email, quote=False))
+    .replace("@@NOVELPIA_PASSWORD@@", html.escape(novelpia_password, quote=False))
+    .replace("@@GOOGLE_CREDENTIALS@@", html.escape(google_credentials, quote=False))
+    .replace("@@GOOGLE_SPREADSHEET_ID@@", html.escape(google_spreadsheet_id, quote=False)))
 sys.stdout.write(text)
 PY
     chmod 600 "$PLIST_DST"

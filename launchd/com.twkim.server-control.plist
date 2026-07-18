@@ -47,6 +47,14 @@
         <string>@@CONTROL_PASSWORD@@</string>
         <key>CONTROL_SECRET_KEY</key>
         <string>@@CONTROL_SECRET@@</string>
+        <key>FILE_CHECK_NOVELPIA_EMAIL</key>
+        <string>@@NOVELPIA_EMAIL@@</string>
+        <key>FILE_CHECK_NOVELPIA_PASSWORD</key>
+        <string>@@NOVELPIA_PASSWORD@@</string>
+        <key>FILE_CHECK_GOOGLE_CREDENTIALS</key>
+        <string>@@GOOGLE_CREDENTIALS@@</string>
+        <key>FILE_CHECK_GOOGLE_SPREADSHEET_ID</key>
+        <string>@@GOOGLE_SPREADSHEET_ID@@</string>
         <!-- macOS launchd의 기본 PATH는 /usr/bin:/bin:/usr/sbin:/sbin 뿐이라
              Homebrew의 python 등 사용자 도구를 못 찾는다. 자식 프로세스에도 그대로
              상속되므로 여기서 한 번에 늘려둔다. install.sh가 sed로 치환하지 않는
