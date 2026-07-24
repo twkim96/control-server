@@ -1,0 +1,314 @@
+"""PM2 adapter for long-running managed services.
+
+The YAML config remains the declaration source. PM2 is only the runtime source.
+This module never uses the user's default ~/.pm2 instance.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import subprocess
+import threading
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Callable
+
+from config_loader import ServiceConfig
+
+
+class Pm2Error(RuntimeError):
+    """Expected PM2 command, state, or configuration failure."""
+
+
+@dataclass(frozen=True)
+class Pm2Process:
+    service_id: str
+    name: str
+    status: str
+    pid: int | None
+    started_at: float | None
+    restart_count: int
+    exit_code: int | None
+
+    @property
+    def alive(self) -> bool:
+        return self.status in {"online", "launching"} and self.pid is not None
+
+
+@dataclass(frozen=True)
+class CommandResult:
+    returncode: int
+    stdout: str
+    stderr: str
+
+
+Runner = Callable[[list[str], dict[str, str], float], CommandResult]
+
+_NAME_PREFIX = "server-control--"
+_SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
+class Pm2Manager:
+    def __init__(
+        self,
+        runtime_dir: str | os.PathLike[str],
+        log_dir: str | os.PathLike[str],
+        *,
+        wrapper: str | os.PathLike[str] | None = None,
+        runner: Runner | None = None,
+        snapshot_ttl_seconds: float = 2.0,
+        command_timeout_seconds: float = 8.0,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        backend_dir = Path(__file__).resolve().parent
+        repo_root = backend_dir.parent
+        self._runtime_root = Path(runtime_dir) / "pm2"
+        # macOS sockaddr_un.sun_path is 104 bytes including the terminator.
+        # PM2 appends rpc.sock/pub.sock/interactor.sock, so fail before its CLI hangs.
+        longest_socket = self._runtime_root / "interactor.sock"
+        if runner is None and len(os.fsencode(longest_socket)) >= 104:
+            raise Pm2Error(f"PM2_HOME path is too long for macOS sockets: {self._runtime_root}")
+        self._manifest_root = self._runtime_root / "manifests"
+        self._log_root = Path(log_dir)
+        self._wrapper = Path(wrapper or repo_root / "scripts" / "pm2ctl.sh")
+        self._runner = runner or self._default_runner
+        self._ttl = max(0.0, snapshot_ttl_seconds)
+        self._timeout = max(0.1, command_timeout_seconds)
+        self._clock = clock
+
+        self._condition = threading.Condition()
+        self._snapshot: dict[str, Pm2Process] = {}
+        self._snapshot_at = 0.0
+        self._snapshot_loading = False
+        self._op_locks: dict[str, threading.RLock] = {}
+
+    @staticmethod
+    def app_name(service_id: str) -> str:
+        if not _SAFE_ID.fullmatch(service_id):
+            raise Pm2Error(f"invalid service id for PM2: {service_id!r}")
+        return f"{_NAME_PREFIX}{service_id}"
+
+    @staticmethod
+    def service_id_from_name(name: str) -> str | None:
+        if not name.startswith(_NAME_PREFIX):
+            return None
+        service_id = name[len(_NAME_PREFIX) :]
+        return service_id if _SAFE_ID.fullmatch(service_id) else None
+
+    def _op_lock(self, service_id: str) -> threading.RLock:
+        with self._condition:
+            return self._op_locks.setdefault(service_id, threading.RLock())
+
+    def build_manifest(self, service: ServiceConfig) -> dict[str, object]:
+        cwd = Path(service.cwd)
+        if not cwd.is_dir():
+            raise Pm2Error(f"working directory does not exist: {cwd}")
+        if not service.command:
+            raise Pm2Error(f"{service.id}: empty command")
+
+        env = dict(service.env)
+        if service.port_env_name and service.port is not None:
+            env.setdefault(service.port_env_name, str(service.port))
+        if service.https.enabled:
+            env.setdefault(service.https.enabled_env_name, "1")
+            if service.https.cert_file:
+                env.setdefault(
+                    service.https.cert_file_env_name,
+                    str(_resolve_child_path(cwd, service.https.cert_file)),
+                )
+            if service.https.key_file:
+                env.setdefault(
+                    service.https.key_file_env_name,
+                    str(_resolve_child_path(cwd, service.https.key_file)),
+                )
+        env.setdefault("PYTHONUNBUFFERED", "1")
+
+        stop_timeout = 5.0
+        for action in service.actions:
+            if action.type == "process_stop" and action.stop_strategy is not None:
+                stop_timeout = action.stop_strategy.timeout_seconds
+                break
+
+        app = {
+            "name": self.app_name(service.id),
+            "script": service.command[0],
+            "args": list(service.command[1:]),
+            "interpreter": "none",
+            "cwd": str(cwd),
+            "env": env,
+            "exec_mode": "fork",
+            "instances": 1,
+            "watch": False,
+            "autorestart": True,
+            "min_uptime": "5s",
+            "max_restarts": 5,
+            "restart_delay": 1000,
+            "exp_backoff_restart_delay": 100,
+            "kill_timeout": max(100, int(stop_timeout * 1000)),
+            "log_file": str(self._log_root / f"{service.id}.log"),
+            "merge_logs": True,
+            "time": False,
+        }
+        return {"apps": [app]}
+
+    def write_manifest(self, service: ServiceConfig) -> Path:
+        manifest = self.build_manifest(service)
+        self._manifest_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        os.chmod(self._runtime_root, 0o700)
+        os.chmod(self._manifest_root, 0o700)
+        path = self._manifest_root / f"{service.id}.json"
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+        return path
+
+    def snapshot(self, *, force: bool = False) -> dict[str, Pm2Process]:
+        with self._condition:
+            now = self._clock()
+            if not force and self._snapshot_at and now - self._snapshot_at < self._ttl:
+                return dict(self._snapshot)
+            while self._snapshot_loading:
+                self._condition.wait(timeout=self._timeout)
+                now = self._clock()
+                if self._snapshot_at and now - self._snapshot_at < self._ttl:
+                    return dict(self._snapshot)
+            self._snapshot_loading = True
+
+        try:
+            fresh = self._fetch_snapshot()
+        except Exception:
+            with self._condition:
+                self._snapshot_loading = False
+                self._condition.notify_all()
+            raise
+
+        with self._condition:
+            self._snapshot = fresh
+            self._snapshot_at = self._clock()
+            self._snapshot_loading = False
+            self._condition.notify_all()
+            return dict(fresh)
+
+    def invalidate(self) -> None:
+        with self._condition:
+            self._snapshot_at = 0.0
+
+    def get_process(self, service_id: str, *, force: bool = False) -> Pm2Process | None:
+        return self.snapshot(force=force).get(service_id)
+
+    def start(self, service: ServiceConfig) -> Pm2Process:
+        with self._op_lock(service.id):
+            path = self.write_manifest(service)
+            self._command(["start", str(path), "--only", self.app_name(service.id)])
+            self.invalidate()
+            state = self.get_process(service.id, force=True)
+            if state is None or not state.alive:
+                raise Pm2Error(f"{service.id}: PM2 did not report an online process")
+            return state
+
+    def stop(self, service_id: str) -> Pm2Process | None:
+        with self._op_lock(service_id):
+            state = self.get_process(service_id, force=True)
+            if state is None:
+                return None
+            self._command(["stop", self.app_name(service_id)])
+            self.invalidate()
+            return self.get_process(service_id, force=True)
+
+    def restart(self, service: ServiceConfig) -> Pm2Process:
+        with self._op_lock(service.id):
+            path = self.write_manifest(service)
+            self._command(["startOrRestart", str(path), "--only", self.app_name(service.id)])
+            self.invalidate()
+            state = self.get_process(service.id, force=True)
+            if state is None or not state.alive:
+                raise Pm2Error(f"{service.id}: PM2 restart did not become online")
+            return state
+
+    def delete(self, service_id: str) -> None:
+        with self._op_lock(service_id):
+            if self.get_process(service_id, force=True) is not None:
+                self._command(["delete", self.app_name(service_id)])
+            self.invalidate()
+            path = self._manifest_root / f"{service_id}.json"
+            path.unlink(missing_ok=True)
+
+    def _fetch_snapshot(self) -> dict[str, Pm2Process]:
+        result = self._command(["jlist"])
+        raw = _extract_json_array(result.stdout)
+        try:
+            items = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise Pm2Error("PM2 returned an invalid process list") from exc
+        if not isinstance(items, list):
+            raise Pm2Error("PM2 process list is not an array")
+
+        snapshot: dict[str, Pm2Process] = {}
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            name = item.get("name")
+            if not isinstance(name, str):
+                continue
+            service_id = self.service_id_from_name(name)
+            if service_id is None:
+                continue
+            env = item.get("pm2_env") if isinstance(item.get("pm2_env"), dict) else {}
+            pid = item.get("pid") if isinstance(item.get("pid"), int) and item.get("pid") > 0 else None
+            uptime_ms = env.get("pm_uptime")
+            snapshot[service_id] = Pm2Process(
+                service_id=service_id,
+                name=name,
+                status=str(env.get("status") or "unknown"),
+                pid=pid,
+                started_at=(float(uptime_ms) / 1000.0 if isinstance(uptime_ms, (int, float)) else None),
+                restart_count=int(env.get("restart_time") or 0),
+                exit_code=(int(env["exit_code"]) if isinstance(env.get("exit_code"), int) else None),
+            )
+        return snapshot
+
+    def _command(self, args: list[str]) -> CommandResult:
+        env = os.environ.copy()
+        env["CONTROL_PM2_HOME"] = str(self._runtime_root)
+        try:
+            result = self._runner([str(self._wrapper), *args], env, self._timeout)
+        except subprocess.TimeoutExpired as exc:
+            raise Pm2Error(f"PM2 command timed out: {args[0]}") from exc
+        except OSError as exc:
+            raise Pm2Error(f"PM2 command could not start: {args[0]}") from exc
+        if result.returncode != 0:
+            raise Pm2Error(f"PM2 command failed: {args[0]}")
+        return result
+
+    @staticmethod
+    def _default_runner(argv: list[str], env: dict[str, str], timeout: float) -> CommandResult:
+        result = subprocess.run(
+            argv,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+        return CommandResult(result.returncode, result.stdout, result.stderr)
+
+
+def _extract_json_array(output: str) -> str:
+    for line in reversed(output.splitlines()):
+        candidate = line.strip()
+        if candidate == "[]" or candidate.startswith("[{" ):
+            return candidate
+    raise Pm2Error("PM2 process list did not contain JSON")
+
+
+def _resolve_child_path(cwd: Path, value: str) -> Path:
+    path = Path(value).expanduser()
+    return path if path.is_absolute() else cwd / path
+
+
+__all__ = ["CommandResult", "Pm2Error", "Pm2Manager", "Pm2Process"]
