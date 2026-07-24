@@ -275,12 +275,31 @@ class Pm2Manager:
                         f"(pid={holder['pid']}, name={holder['name']})"
                     )
             path = self.write_manifest(service)
-            self._command(["start", str(path), "--only", self.app_name(service.id)])
+            command_error: Pm2Error | None = None
+            try:
+                self._command(["start", str(path), "--only", self.app_name(service.id)])
+            except Pm2Error as exc:
+                # PM2 may accept the start and then lose/timeout the CLI reply.
+                # Reconcile against PM2 before reporting failure so callers do
+                # not receive a false 409 while the service is already online.
+                command_error = exc
             self.invalidate()
-            state = self.get_process(service.id, force=True)
-            if state is None or not state.alive:
-                raise Pm2Error(f"{service.id}: PM2 did not report an online process")
-            return state
+            state_error: Pm2Error | None = None
+            for attempt in range(3):
+                try:
+                    state = self.get_process(service.id, force=True)
+                    if state is not None and state.alive:
+                        return state
+                    state_error = None
+                except Pm2Error as exc:
+                    state_error = exc
+                if attempt < 2:
+                    time.sleep(0.1)
+            if command_error is not None:
+                raise command_error
+            if state_error is not None:
+                raise Pm2Error(f"{service.id}: PM2 state check failed after start") from state_error
+            raise Pm2Error(f"{service.id}: PM2 did not report an online process")
 
     def stop(
         self,

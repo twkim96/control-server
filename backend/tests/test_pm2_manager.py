@@ -177,6 +177,61 @@ def test_mutation_invalidates_snapshot_and_uses_namespaced_name(tmp_path: Path) 
     assert commands[2] == ["jlist"]
 
 
+def test_start_reconciles_online_process_after_cli_failure(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    started = False
+
+    def runner(argv, _env, _timeout):
+        nonlocal started
+        if argv[1] == "start":
+            started = True
+            return CommandResult(1, "", "private PM2 failure detail")
+        payload = []
+        if started:
+            payload = [
+                {
+                    "name": "server-control--example",
+                    "pid": 88,
+                    "pm2_env": {"status": "online"},
+                }
+            ]
+        return CommandResult(0, json.dumps(payload, separators=(",", ":")), "")
+
+    manager = _manager(tmp_path, runner)
+    state = manager.start(service)
+
+    assert state.pid == 88
+
+
+def test_start_retries_transient_post_start_state_failure(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    jlist_calls = 0
+
+    def runner(argv, _env, _timeout):
+        nonlocal jlist_calls
+        if argv[1] == "start":
+            return CommandResult(0, "ok", "")
+        jlist_calls += 1
+        if jlist_calls == 1:
+            return CommandResult(0, "[]", "")
+        if jlist_calls == 2:
+            return CommandResult(1, "", "transient")
+        payload = [
+            {
+                "name": "server-control--example",
+                "pid": 88,
+                "pm2_env": {"status": "online"},
+            }
+        ]
+        return CommandResult(0, json.dumps(payload, separators=(",", ":")), "")
+
+    manager = _manager(tmp_path, runner)
+    state = manager.start(service)
+
+    assert state.pid == 88
+    assert jlist_calls == 3
+
+
 def test_command_failure_does_not_expose_stderr(tmp_path: Path) -> None:
     def runner(*_args):
         return CommandResult(1, "", "CONTROL_PASSWORD=secret")
