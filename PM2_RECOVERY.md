@@ -42,9 +42,19 @@ Use only the dedicated Control Server `PM2_HOME`. Never run `pm2 delete all` or
 6. Leave Sunshine stopped unless it was explicitly running in the private
    pre-cutover snapshot.
 
-The concrete PM2 wrapper commands will be added here when the v1.4.0 PM2 runtime
-tooling is implemented. Until then, this section is not evidence that a PM2
-cutover is ready.
+Use the repository wrapper so every command targets the dedicated PM2 instance:
+
+```bash
+scripts/pm2ctl.sh jlist
+scripts/pm2ctl.sh stop server-control--SERVICE_ID
+scripts/pm2ctl.sh delete server-control--SERVICE_ID
+scripts/pm2ctl.sh kill
+```
+
+Run stop/delete once per namespaced service and verify its port after each stop.
+The final `kill` is allowed only after every dedicated application is stopped and
+deleted. The wrapper forces the private `PM2_HOME`; do not replace it with a bare
+global `pm2` command during recovery.
 
 ## Restore source code
 
@@ -135,4 +145,3 @@ Each physical backup must contain:
 Test the Git bundle with `git bundle verify` and verify file checksums before the
 PM2 cutover. A backup that has merely been copied but not read back is not a
 completed restore point.
-

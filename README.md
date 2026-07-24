@@ -23,7 +23,7 @@
 
 - Backend: Python, Flask, Waitress, psutil, ruamel.yaml
 - Frontend: React, TypeScript, Vite
-- Runtime: macOS launchd
+- Runtime: macOS launchd (Control Server), isolated PM2 (managed services, v1.4.0)
 - Configuration: YAML
 
 프로젝트의 HTTP API는 [API.md](./API.md)를 참고하세요.
@@ -51,6 +51,9 @@ cd frontend
 npm ci
 npm run build
 cd ..
+
+# 장기 실행 서비스 관리용 pinned PM2
+/opt/homebrew/bin/npm ci --prefix ops/pm2
 
 # 로컬 설정과 비밀번호 파일
 cp backend/config.example.yml backend/config.yml

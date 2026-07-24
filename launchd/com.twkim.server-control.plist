@@ -47,6 +47,12 @@
         <string>@@CONTROL_PASSWORD@@</string>
         <key>CONTROL_SECRET_KEY</key>
         <string>@@CONTROL_SECRET@@</string>
+        <key>CONTROL_PM2_NODE</key>
+        <string>@@CONTROL_PM2_NODE@@</string>
+        <key>CONTROL_PM2_CLI</key>
+        <string>@@CONTROL_PM2_CLI@@</string>
+        <key>CONTROL_PM2_HOME</key>
+        <string>@@CONTROL_PM2_HOME@@</string>
         <key>FILE_CHECK_NOVELPIA_EMAIL</key>
         <string>@@NOVELPIA_EMAIL@@</string>
         <key>FILE_CHECK_NOVELPIA_PASSWORD</key>

@@ -64,6 +64,11 @@ novelpia_email = os.environ.get("FILE_CHECK_NOVELPIA_EMAIL", "")
 novelpia_password = os.environ.get("FILE_CHECK_NOVELPIA_PASSWORD", "")
 google_credentials = os.environ.get("FILE_CHECK_GOOGLE_CREDENTIALS", "")
 google_spreadsheet_id = os.environ.get("FILE_CHECK_GOOGLE_SPREADSHEET_ID", "")
+pm2_node = os.environ.get("CONTROL_PM2_NODE", "/opt/homebrew/bin/node")
+pm2_cli = os.environ.get(
+    "CONTROL_PM2_CLI", os.path.join(repo, "ops", "pm2", "node_modules", "pm2", "bin", "pm2")
+)
+pm2_home = os.environ.get("CONTROL_PM2_HOME", os.path.join(repo, "backend", "runtime", "pm2"))
 with open(template_path, "r", encoding="utf-8") as f:
     text = f.read()
 text = (text
@@ -72,6 +77,9 @@ text = (text
     .replace("@@CONFIG@@", cfg)
     .replace("@@CONTROL_PASSWORD@@", html.escape(pw, quote=False))
     .replace("@@CONTROL_SECRET@@", html.escape(secret, quote=False))
+    .replace("@@CONTROL_PM2_NODE@@", html.escape(pm2_node, quote=False))
+    .replace("@@CONTROL_PM2_CLI@@", html.escape(pm2_cli, quote=False))
+    .replace("@@CONTROL_PM2_HOME@@", html.escape(pm2_home, quote=False))
     .replace("@@NOVELPIA_EMAIL@@", html.escape(novelpia_email, quote=False))
     .replace("@@NOVELPIA_PASSWORD@@", html.escape(novelpia_password, quote=False))
     .replace("@@GOOGLE_CREDENTIALS@@", html.escape(google_credentials, quote=False))
