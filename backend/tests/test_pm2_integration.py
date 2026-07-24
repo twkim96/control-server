@@ -8,9 +8,11 @@ import subprocess
 import sys
 import tempfile
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
+import psutil
 
 from config_schema import (
     ActionConfig,
@@ -113,6 +115,13 @@ def test_real_pm2_lifecycle_isolated(tmp_path: Path) -> None:
         first = manager.start(service)
         assert first.pid is not None
         _wait_port(port, True)
+        log_path = tmp_path / "logs" / "pm2_fixture.log"
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and (
+            not log_path.exists() or "ready" not in log_path.read_text(encoding="utf-8")
+        ):
+            time.sleep(0.05)
+        assert "ready" in log_path.read_text(encoding="utf-8")
 
         os.kill(first.pid, signal.SIGKILL)
         deadline = time.monotonic() + 12
@@ -127,7 +136,14 @@ def test_real_pm2_lifecycle_isolated(tmp_path: Path) -> None:
         _wait_port(port, True)
 
         stopped = manager.stop(service.id)
-        assert stopped is not None and stopped.status == "stopped"
+        assert stopped.pid is None
+        assert manager.get_process(service.id, force=True).status == "stopped"
+        _wait_port(port, False)
+
+        started_again = manager.start(service)
+        assert started_again.alive
+        _wait_port(port, True)
+        manager.stop(service.id)
         _wait_port(port, False)
 
         again = manager.restart(service)
@@ -139,6 +155,70 @@ def test_real_pm2_lifecycle_isolated(tmp_path: Path) -> None:
         manager.delete(service.id)
         assert manager.get_process(service.id, force=True) is None
     finally:
+        env = os.environ.copy()
+        env["CONTROL_PM2_HOME"] = str(pm2_home)
+        subprocess.run(
+            [str(wrapper), "kill"],
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=15,
+            check=False,
+        )
+        shutil.rmtree(pm2_runtime, ignore_errors=True)
+
+
+def test_real_pm2_stop_does_not_leave_signal_ignoring_child(tmp_path: Path) -> None:
+    parent = tmp_path / "parent.py"
+    child_pid_file = tmp_path / "child.pid"
+    parent.write_text(
+        "import pathlib, subprocess, sys, time\n"
+        "child = subprocess.Popen([sys.executable, '-c', "
+        "'import signal,time; signal.signal(signal.SIGINT, signal.SIG_IGN); "
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(120)'])\n"
+        "pathlib.Path(sys.argv[1]).write_text(str(child.pid))\n"
+        "print('child', child.pid, flush=True)\n"
+        "while True: time.sleep(0.1)\n",
+        encoding="utf-8",
+    )
+    service = replace(
+        _service(tmp_path, _free_port()),
+        id="pm2_tree_fixture",
+        command=(sys.executable, "-u", "parent.py", str(child_pid_file)),
+        port=None,
+    )
+    wrapper = Path(__file__).resolve().parents[2] / "scripts" / "pm2ctl.sh"
+    pm2_runtime = Path(tempfile.mkdtemp(prefix="sc-pm2-tree-", dir="/private/tmp"))
+    manager = Pm2Manager(
+        pm2_runtime,
+        tmp_path / "logs",
+        wrapper=wrapper,
+        command_timeout_seconds=15.0,
+        snapshot_ttl_seconds=0.1,
+    )
+    pm2_home = pm2_runtime / "pm2"
+    child_pid = None
+    try:
+        manager.start(service)
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and not child_pid_file.exists():
+            time.sleep(0.05)
+        child_pid = int(child_pid_file.read_text(encoding="utf-8"))
+        assert psutil.pid_exists(child_pid)
+
+        manager.stop(service.id)
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and psutil.pid_exists(child_pid):
+            time.sleep(0.1)
+        assert not psutil.pid_exists(child_pid)
+        manager.delete(service.id)
+    finally:
+        if child_pid is not None and psutil.pid_exists(child_pid):
+            try:
+                os.kill(child_pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
         env = os.environ.copy()
         env["CONTROL_PM2_HOME"] = str(pm2_home)
         subprocess.run(
