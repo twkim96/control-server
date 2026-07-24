@@ -14,10 +14,10 @@
 - stdout/stderr 로그 tail 및 SSE 실시간 스트리밍
 - CPU, 메모리, 자식 프로세스 리소스 표시
 - 웹 UI에서 서비스와 일회성 Action Group 등록·수정·정렬
-- 외부에서 이미 실행 중인 프로세스 감지와 조건부 입양
+- 외부에서 이미 실행 중인 프로세스 감지와 중복 실행 방지
 - Python 인터프리터 자동 탐색
 - 세션 쿠키 로그인과 CSRF 보호
-- launchd를 이용한 로그인 시 자동 실행
+- launchd로 Control Server 자동 실행, 격리 PM2로 등록 서비스 관리
 
 ## 구성
 
@@ -199,26 +199,32 @@ actions: []
 - 포트와 host를 환경변수로 받을 수 있도록 구성
 - 가능하면 2xx를 반환하는 HTTP health endpoint 제공
 
-Control Server는 시작 전 포트 점유를 확인하며, 자신이 시작한 프로세스는 PID와 생성
-시간을 함께 기록해 PID 재사용을 방지합니다.
+Control Server는 시작 전 포트 점유를 확인하며, 등록 서비스는 전용
+`backend/runtime/pm2` 아래의 PM2 daemon에서 `server-control--<service_id>` 이름으로
+관리합니다. 사용자 기본 `~/.pm2`와는 별개입니다.
 
-### 외부 프로세스 입양
+### 외부 프로세스와 PM2 소유권
 
-`lifecycle.unmanaged_policy: "manage"`인 서비스는 같은 포트에서 이미 실행 중인
-프로세스를 안전 조건이 맞을 때 추적 대상으로 받아들일 수 있습니다.
+PM2 운영 모드에서는 같은 포트에서 외부 프로세스가 발견돼도 자동 입양하지 않습니다.
+서비스 상세에는 `running_external`과 `pm2_exclusive` 진단이 표시됩니다. 중복 실행을
+피하려면 외부 프로세스의 명령과 cwd를 확인해 정상 종료한 뒤 Control Server에서
+서비스를 시작하세요.
 
-입양에는 다음 조건이 필요합니다.
+`kill_external`은 기존 안전 검증을 통과한 외부 프로세스에만 사용할 수 있습니다.
+명령/cwd/health가 일치하지 않으면 종료를 거부합니다.
 
-- 실제 포트 점유 프로세스의 argv가 `command` 또는 `adopt_command`와 일치
-- 실제 cwd가 설정의 `cwd`와 일치
-- health check가 활성화된 경우 검사 통과
-- 해당 PID가 다른 서비스에 의해 추적되고 있지 않음
+### PM2 운영 명령
 
-기본 `adopt_match: "exact"`는 argv 전체 일치를 요구합니다. 뒤쪽 인자만 가변적인
-서비스는 두 토큰 이상의 `adopt_command`와 `adopt_match: "prefix"`를 사용할 수 있습니다.
-입양 실패 이유는 서비스 상세의 `adopt_diagnostics`에서 확인할 수 있습니다.
+항상 저장소 wrapper를 사용하세요. bare `pm2`는 사용자 기본 daemon을 가리킬 수 있습니다.
 
-입양한 프로세스의 기존 stdout은 Control Server가 소급해서 캡처할 수 없습니다.
+```bash
+scripts/pm2ctl.sh jlist
+scripts/pm2ctl.sh status
+scripts/pm2ctl.sh logs server-control--SERVICE_ID
+```
+
+운영 복구와 pre-PM2 rollback 절차는
+[PM2_RECOVERY.md](./PM2_RECOVERY.md)에 있습니다.
 
 ## 일회성 작업
 
@@ -272,17 +278,21 @@ backend/
   config.example.yml     공개 설정 예시
   config_loader.py       설정 파싱과 검증
   config_writer.py       원자적 설정 저장
-  process_manager.py     프로세스 수명주기와 입양
+  pm2_manager.py         격리 PM2 서비스 수명주기
+  process_manager.py     외부 프로세스 안전 진단과 rollback 호환
   routes/                HTTP API
   tests/                 백엔드 테스트
 frontend/
   src/api/               API 클라이언트
   src/features/          화면별 React 기능
 launchd/
-  install.sh             LaunchAgent 관리
+  install.sh             Control Server LaunchAgent 관리
   run.env.example        비밀값 템플릿
+ops/pm2/
+  package.json           고정 PM2 의존성
 scripts/
   dev_run.sh             개발 실행
+  pm2ctl.sh              전용 PM2_HOME wrapper
   with_tailscale_https.sh
 ```
 
@@ -316,10 +326,11 @@ bash launchd/install.sh status
 
 `CONTROL_PASSWORD`, `frontend/dist`, Python 가상환경과 설정 파일을 확인하세요.
 
-### 외부 프로세스가 입양되지 않음
+### 외부 프로세스로 표시됨
 
-서비스 상세의 `adopt_diagnostics`에서 `cmdline_mismatch`, `cwd_mismatch`,
-`health_failed` 등의 사유를 확인하세요.
+PM2 모드에서는 자동 입양하지 않는 것이 정상입니다. 서비스 상세의
+`adopt_diagnostics`에서 포트 점유 PID와 `pm2_exclusive`,
+`cmdline_mismatch`, `cwd_mismatch`, `health_failed` 등의 사유를 확인하세요.
 
 ### SSE는 연결됐지만 로그가 없음
 
