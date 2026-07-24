@@ -12,14 +12,19 @@ import re
 import subprocess
 import threading
 import time
-from dataclasses import dataclass
+from contextlib import contextmanager
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable
 
-from config_loader import ServiceConfig
+import psutil
+
+from config_loader import ServiceConfig, StopStrategy
+from process_manager import AdoptEvaluation, ProcessError, ProcessManager, RuntimeState
+from net_utils import find_port_holder
 
 
-class Pm2Error(RuntimeError):
+class Pm2Error(ProcessError):
     """Expected PM2 command, state, or configuration failure."""
 
 
@@ -62,6 +67,7 @@ class Pm2Manager:
         snapshot_ttl_seconds: float = 2.0,
         command_timeout_seconds: float = 8.0,
         clock: Callable[[], float] = time.monotonic,
+        external_helper: ProcessManager | None = None,
     ) -> None:
         backend_dir = Path(__file__).resolve().parent
         repo_root = backend_dir.parent
@@ -78,12 +84,14 @@ class Pm2Manager:
         self._ttl = max(0.0, snapshot_ttl_seconds)
         self._timeout = max(0.1, command_timeout_seconds)
         self._clock = clock
+        self._external_helper = external_helper
 
         self._condition = threading.Condition()
         self._snapshot: dict[str, Pm2Process] = {}
         self._snapshot_at = 0.0
         self._snapshot_loading = False
         self._op_locks: dict[str, threading.RLock] = {}
+        self.supports_adoption = False
 
     @staticmethod
     def app_name(service_id: str) -> str:
@@ -101,6 +109,18 @@ class Pm2Manager:
     def _op_lock(self, service_id: str) -> threading.RLock:
         with self._condition:
             return self._op_locks.setdefault(service_id, threading.RLock())
+
+    @contextmanager
+    def service_operation(self, service_id: str):
+        with self._op_lock(service_id):
+            yield
+
+    def activate_service(self, service: ServiceConfig) -> None:
+        self.app_name(service.id)
+
+    def reconcile_service_definitions(self, services: tuple[ServiceConfig, ...]) -> None:
+        for service in services:
+            self.activate_service(service)
 
     def build_manifest(self, service: ServiceConfig) -> dict[str, object]:
         cwd = Path(service.cwd)
@@ -200,8 +220,60 @@ class Pm2Manager:
     def get_process(self, service_id: str, *, force: bool = False) -> Pm2Process | None:
         return self.snapshot(force=force).get(service_id)
 
+    def get_state(self, service_id: str) -> RuntimeState:
+        process = self.get_process(service_id)
+        if process is None:
+            return RuntimeState()
+        pid = process.pid if process.alive else None
+        pgid = None
+        create_time = None
+        if pid is not None:
+            try:
+                proc = psutil.Process(pid)
+                create_time = proc.create_time()
+            except psutil.NoSuchProcess:
+                pid = None
+            except (psutil.AccessDenied, OSError):
+                # PM2 is the runtime source. Transient inspection failure is not
+                # proof that its online PID died (same conservative rule as v1.3.4).
+                pass
+            if pid is not None:
+                try:
+                    pgid = os.getpgid(pid)
+                except OSError:
+                    pass
+        return RuntimeState(
+            pid=pid,
+            pgid=pgid,
+            start_time=process.started_at if pid is not None else None,
+            create_time=create_time,
+            last_exit_code=process.exit_code,
+            last_exit_time=None,
+            last_action=None,
+            last_action_time=None,
+            adopted=False,
+            extra={"pm2_restart_count": process.restart_count, "pm2_status": process.status},
+        )
+
+    def inspect_state(self, service_id: str) -> tuple[RuntimeState, bool]:
+        state = self.get_state(service_id)
+        return state, state.pid is not None
+
+    def is_alive(self, service_id: str) -> bool:
+        return self.inspect_state(service_id)[1]
+
     def start(self, service: ServiceConfig) -> Pm2Process:
         with self._op_lock(service.id):
+            current = self.get_process(service.id, force=True)
+            if current is not None and current.alive:
+                raise Pm2Error(f"{service.id} is already running (pid={current.pid})")
+            if service.port is not None:
+                holder = find_port_holder(service.port)
+                if holder is not None:
+                    raise Pm2Error(
+                        f"{service.id}: port {service.port} is already in use "
+                        f"(pid={holder['pid']}, name={holder['name']})"
+                    )
             path = self.write_manifest(service)
             self._command(["start", str(path), "--only", self.app_name(service.id)])
             self.invalidate()
@@ -210,16 +282,26 @@ class Pm2Manager:
                 raise Pm2Error(f"{service.id}: PM2 did not report an online process")
             return state
 
-    def stop(self, service_id: str) -> Pm2Process | None:
+    def stop(
+        self,
+        service: str | ServiceConfig,
+        strategy: StopStrategy | None = None,
+    ) -> RuntimeState:
+        service_id = service if isinstance(service, str) else service.id
         with self._op_lock(service_id):
             state = self.get_process(service_id, force=True)
             if state is None:
-                return None
+                return RuntimeState()
             self._command(["stop", self.app_name(service_id)])
             self.invalidate()
-            return self.get_process(service_id, force=True)
+            self.get_process(service_id, force=True)
+            return self.get_state(service_id)
 
-    def restart(self, service: ServiceConfig) -> Pm2Process:
+    def restart(
+        self,
+        service: ServiceConfig,
+        strategy: StopStrategy | None = None,
+    ) -> Pm2Process:
         with self._op_lock(service.id):
             path = self.write_manifest(service)
             self._command(["startOrRestart", str(path), "--only", self.app_name(service.id)])
@@ -236,6 +318,50 @@ class Pm2Manager:
             self.invalidate()
             path = self._manifest_root / f"{service_id}.json"
             path.unlink(missing_ok=True)
+
+    def forget_service(self, service_id: str) -> None:
+        state, alive = self.inspect_state(service_id)
+        if alive:
+            raise Pm2Error(f"{service_id} is running (pid={state.pid}); stop it first")
+        self.delete(service_id)
+
+    def evaluate_adopt(
+        self,
+        service: ServiceConfig,
+        *,
+        health_ok: bool | None = None,
+    ) -> AdoptEvaluation:
+        if self._external_helper is None:
+            raise Pm2Error("external process helper is not configured")
+        evaluation = self._external_helper.evaluate_adopt(service, health_ok=health_ok)
+        return replace(
+            evaluation,
+            diagnostics=replace(
+                evaluation.diagnostics,
+                ok=False,
+                reason="pm2_exclusive",
+            ),
+        )
+
+    def try_adopt(
+        self,
+        service: ServiceConfig,
+        *,
+        evaluation: AdoptEvaluation | None = None,
+        health_ok: bool | None = None,
+    ) -> None:
+        return None
+
+    def try_adopt_all(self, services) -> list[str]:
+        return []
+
+    def kill_external(self, service: ServiceConfig, **kwargs):
+        if self._external_helper is None:
+            raise Pm2Error("external process helper is not configured")
+        return self._external_helper.kill_external(service, **kwargs)
+
+    def shutdown(self) -> None:
+        self.invalidate()
 
     def _fetch_snapshot(self) -> dict[str, Pm2Process]:
         result = self._command(["jlist"])

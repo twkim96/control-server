@@ -120,7 +120,8 @@ export type AdoptReason =
   | "cmdline_mismatch"
   | "cwd_resolve_failed"
   | "cwd_mismatch"
-  | "health_failed";
+  | "health_failed"
+  | "pm2_exclusive";
 
 export interface AdoptDiagnostics {
   ok: boolean;

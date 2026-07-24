@@ -26,6 +26,7 @@ from file_browser import FileBrowser
 from health_checker import HealthChecker
 from log_manager import LogManager
 from process_manager import ProcessManager, RuntimeState
+from pm2_manager import Pm2Error, Pm2Manager
 from resource_sampler import ResourceSampler
 from routes import actions as actions_routes
 from routes import appearance_api as appearance_api_routes
@@ -53,6 +54,8 @@ def create_app(
     runtime_dir: str | os.PathLike[str] = DEFAULT_RUNTIME_DIR,
     frontend_dist: str | os.PathLike[str] = DEFAULT_FRONTEND_DIST,
     run_autostart: bool = False,
+    process_backend: str = "native",
+    pm2_runner=None,
 ) -> Flask:
     config = load_config(config_path)
 
@@ -62,7 +65,18 @@ def create_app(
     registry = ServiceRegistry(config)
     log_manager = LogManager(log_dir)
     run_log_manager = RunLogManager(Path(log_dir) / "actions")
-    process_manager = ProcessManager(runtime_dir, log_manager)
+    if process_backend == "pm2":
+        external_helper = ProcessManager(Path(runtime_dir) / "external", log_manager)
+        process_manager = Pm2Manager(
+            runtime_dir,
+            log_dir,
+            runner=pm2_runner,
+            external_helper=external_helper,
+        )
+    elif process_backend == "native":
+        process_manager = ProcessManager(runtime_dir, log_manager)
+    else:
+        raise ConfigError(f"unsupported process backend: {process_backend}")
     for service in config.services:
         process_manager.activate_service(service)
     health_checker = HealthChecker(process_manager, health_ttl_seconds=2.0)
@@ -80,6 +94,7 @@ def create_app(
     app.config["log_manager"] = log_manager
     app.config["run_log_manager"] = run_log_manager
     app.config["process_manager"] = process_manager
+    app.config["process_backend"] = process_backend
     app.config["health_checker"] = health_checker
     app.config["file_browser"] = file_browser
     app.config["action_runner"] = action_runner
@@ -96,6 +111,10 @@ def create_app(
     app.register_blueprint(system_routes.bp)
     app.register_blueprint(pages_routes.bp)
 
+    @app.errorhandler(Pm2Error)
+    def handle_pm2_error(exc: Pm2Error):
+        return jsonify({"error": "pm2_unavailable", "message": str(exc)}), 503
+
     @app.get("/api/meta")
     def meta():
         return jsonify(
@@ -111,7 +130,8 @@ def create_app(
         )
 
     if run_autostart:
-        _run_adopt_pass(registry, process_manager)
+        if getattr(process_manager, "supports_adoption", True):
+            _run_adopt_pass(registry, process_manager)
         _run_autostart(registry, process_manager)
 
     return app
@@ -173,7 +193,11 @@ def main(argv: list[str] | None = None) -> int:
     _setup_logging(args.log_level)
 
     try:
-        app = create_app(config_path=args.config, run_autostart=True)
+        app = create_app(
+            config_path=args.config,
+            run_autostart=True,
+            process_backend=os.environ.get("CONTROL_PROCESS_BACKEND", "native"),
+        )
     except ConfigError as exc:
         print(f"[config error] {exc}", file=sys.stderr)
         return 2

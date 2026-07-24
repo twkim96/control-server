@@ -119,6 +119,7 @@ class AdoptDiagnostics:
     * cwd_resolve_failed  : cwd realpath 변환 실패
     * cwd_mismatch        : 실제 cwd가 service.cwd와 불일치
     * health_failed       : health.enabled인데 health URL이 2xx를 안 줌
+    * pm2_exclusive       : PM2가 유일한 소유자라 외부 PID 자동 입양을 하지 않음
     """
 
     ok: bool

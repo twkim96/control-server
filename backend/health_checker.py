@@ -134,6 +134,7 @@ class HealthChecker:
             and external_eligible
             and service.lifecycle.unmanaged_policy == "manage"
             and health_info.get("ok") is True
+            and getattr(self._pm, "supports_adoption", True)
         ):
             adopted = self._pm.try_adopt(service, evaluation=adoption_evaluation)
             if adopted is not None:
@@ -165,7 +166,11 @@ class HealthChecker:
             if adoption_evaluation is not None:
                 unmanaged_pid = adoption_evaluation.diagnostics.candidate_pid
         else:
-            never_started = state.pid is None and state.last_exit_time is None
+            never_started = (
+                state.pid is None
+                and state.last_exit_time is None
+                and not state.extra.get("pm2_status")
+            )
             phase = "unknown" if never_started else "stopped"
 
         port_check = None

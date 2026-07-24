@@ -5,8 +5,10 @@ import os
 import threading
 import time
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
+import psutil
 
 from config_schema import (
     ActionConfig,
@@ -170,8 +172,9 @@ def test_mutation_invalidates_snapshot_and_uses_namespaced_name(tmp_path: Path) 
     state = manager.start(service)
 
     assert state.pid == 88
-    assert commands[0] == ["start", str(tmp_path / "runtime/pm2/manifests/example.json"), "--only", "server-control--example"]
-    assert commands[1] == ["jlist"]
+    assert commands[0] == ["jlist"]
+    assert commands[1] == ["start", str(tmp_path / "runtime/pm2/manifests/example.json"), "--only", "server-control--example"]
+    assert commands[2] == ["jlist"]
 
 
 def test_command_failure_does_not_expose_stderr(tmp_path: Path) -> None:
@@ -182,6 +185,33 @@ def test_command_failure_does_not_expose_stderr(tmp_path: Path) -> None:
     with pytest.raises(Pm2Error, match="PM2 command failed: jlist") as exc:
         manager.snapshot()
     assert "secret" not in str(exc.value)
+
+
+def test_start_rejects_existing_pm2_process_before_manifest(tmp_path: Path) -> None:
+    payload = [{"name": "server-control--example", "pid": 99, "pm2_env": {"status": "online"}}]
+    calls: list[str] = []
+
+    def runner(argv, _env, _timeout):
+        calls.append(argv[1])
+        return CommandResult(0, json.dumps(payload, separators=(",", ":")), "")
+
+    manager = _manager(tmp_path, runner)
+    with pytest.raises(Pm2Error, match="already running"):
+        manager.start(_service(tmp_path))
+    assert calls == ["jlist"]
+
+
+def test_online_pm2_pid_stays_alive_on_transient_psutil_denial(tmp_path: Path) -> None:
+    payload = [{"name": "server-control--example", "pid": 99999, "pm2_env": {"status": "online"}}]
+    manager = _manager(
+        tmp_path,
+        lambda *_: CommandResult(0, json.dumps(payload, separators=(",", ":")), ""),
+    )
+    with patch("pm2_manager.psutil.Process", side_effect=psutil.AccessDenied(99999)):
+        state, alive = manager.inspect_state("example")
+    assert alive is True
+    assert state.pid == 99999
+    assert state.create_time is None
 
 
 @pytest.mark.parametrize("service_id", ["bad/id", " space", "", "한글"])

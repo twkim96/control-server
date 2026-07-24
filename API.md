@@ -300,6 +300,7 @@ curl -sS -b "$COOKIE_JAR" \
 - `cmdline_mismatch`
 - `cwd_resolve_failed`, `cwd_mismatch`
 - `health_failed`
+- `pm2_exclusive`: PM2 runtime에서는 외부 PID를 자동 입양하지 않음
 
 ## 서비스 액션
 

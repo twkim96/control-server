@@ -11,6 +11,8 @@
     @@CONFIG@@         : 사용할 config.yml 절대경로
     @@CONTROL_PASSWORD@@: 인스톨러가 환경에서 가져와 주입
     @@CONTROL_SECRET@@  : (선택) 같은 방식
+    @@CONTROL_PM2_*@@    : PM2 Node/CLI/home override
+    @@CONTROL_PROCESS_BACKEND@@: native 또는 pm2
 -->
 <plist version="1.0">
 <dict>
@@ -53,6 +55,8 @@
         <string>@@CONTROL_PM2_CLI@@</string>
         <key>CONTROL_PM2_HOME</key>
         <string>@@CONTROL_PM2_HOME@@</string>
+        <key>CONTROL_PROCESS_BACKEND</key>
+        <string>@@CONTROL_PROCESS_BACKEND@@</string>
         <key>FILE_CHECK_NOVELPIA_EMAIL</key>
         <string>@@NOVELPIA_EMAIL@@</string>
         <key>FILE_CHECK_NOVELPIA_PASSWORD</key>
