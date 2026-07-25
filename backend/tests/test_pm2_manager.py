@@ -5,7 +5,7 @@ import os
 import threading
 import time
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 import psutil
@@ -50,13 +50,14 @@ def _service(tmp_path: Path, *, sid: str = "example") -> ServiceConfig:
     )
 
 
-def _manager(tmp_path: Path, runner, *, ttl: float = 2.0) -> Pm2Manager:
+def _manager(tmp_path: Path, runner, *, ttl: float = 2.0, **kwargs) -> Pm2Manager:
     return Pm2Manager(
         tmp_path / "runtime",
         tmp_path / "logs",
         wrapper=tmp_path / "pm2ctl.sh",
         runner=runner,
         snapshot_ttl_seconds=ttl,
+        **kwargs,
     )
 
 
@@ -137,7 +138,10 @@ def test_snapshot_ttl_and_singleflight_use_one_cli_call(tmp_path: Path) -> None:
 
     manager = _manager(tmp_path, runner, ttl=10.0)
     results: list[dict] = []
-    threads = [threading.Thread(target=lambda: results.append(manager.snapshot())) for _ in range(8)]
+    threads = [
+        threading.Thread(target=lambda: results.append(manager.snapshot(nonblocking=True)))
+        for _ in range(8)
+    ]
     for thread in threads:
         thread.start()
     assert entered.wait(1)
@@ -150,6 +154,95 @@ def test_snapshot_ttl_and_singleflight_use_one_cli_call(tmp_path: Path) -> None:
     assert len(results) == 8
     assert manager.snapshot() == {}
     assert calls == 1
+
+
+def test_expired_read_returns_last_good_while_one_background_refresh_runs(
+    tmp_path: Path,
+) -> None:
+    calls = 0
+    refresh_entered = threading.Event()
+    release_refresh = threading.Event()
+    payload = [
+        {
+            "name": "server-control--example",
+            "pid": 88,
+            "pm2_env": {"status": "online"},
+        }
+    ]
+
+    def runner(*_args):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return CommandResult(0, json.dumps(payload, separators=(",", ":")), "")
+        refresh_entered.set()
+        assert release_refresh.wait(2)
+        return CommandResult(1, "", "CONTROL_PASSWORD=must-not-leak")
+
+    manager = _manager(
+        tmp_path,
+        runner,
+        ttl=0.01,
+        snapshot_retry_seconds=0.1,
+        slow_refresh_seconds=0.01,
+    )
+    assert manager.snapshot()["example"].pid == 88
+    time.sleep(0.11)
+
+    started = time.monotonic()
+    results: list[dict] = []
+    threads = [
+        threading.Thread(target=lambda: results.append(manager.snapshot(nonblocking=True)))
+        for _ in range(8)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=1)
+
+    assert time.monotonic() - started < 0.5
+    assert refresh_entered.wait(1)
+    assert len(results) == 8
+    assert all(result["example"].pid == 88 for result in results)
+    assert calls == 2
+    time.sleep(0.11)
+    assert manager.snapshot_diagnostics()["degraded"] is True
+
+    release_refresh.set()
+    for _ in range(100):
+        diagnostics = manager.snapshot_diagnostics()
+        if not diagnostics["refreshing"]:
+            break
+        time.sleep(0.01)
+    assert diagnostics["degraded"] is True
+    assert diagnostics["last_error"] == "PM2 command failed: jlist"
+    assert "must-not-leak" not in str(diagnostics)
+
+
+def test_forced_snapshot_never_falls_back_to_last_good(tmp_path: Path) -> None:
+    calls = 0
+    payload = [
+        {
+            "name": "server-control--example",
+            "pid": 88,
+            "pm2_env": {"status": "online"},
+        }
+    ]
+
+    def runner(*_args):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return CommandResult(0, json.dumps(payload, separators=(",", ":")), "")
+        return CommandResult(1, "", "private failure")
+
+    manager = _manager(tmp_path, runner)
+    assert manager.snapshot()["example"].pid == 88
+    manager.invalidate()
+
+    with pytest.raises(Pm2Error, match="PM2 command failed: jlist"):
+        manager.snapshot(force=True)
+    assert calls == 2
 
 
 def test_mutation_invalidates_snapshot_and_uses_namespaced_name(tmp_path: Path) -> None:
@@ -267,6 +360,28 @@ def test_online_pm2_pid_stays_alive_on_transient_psutil_denial(tmp_path: Path) -
     assert alive is True
     assert state.pid == 99999
     assert state.create_time is None
+
+
+def test_external_kill_requires_confirmed_absence_from_pm2(tmp_path: Path) -> None:
+    payload = [
+        {
+            "name": "server-control--example",
+            "pid": 88,
+            "pm2_env": {"status": "online"},
+        }
+    ]
+    external_helper = Mock()
+    manager = Pm2Manager(
+        tmp_path / "runtime",
+        tmp_path / "logs",
+        wrapper=tmp_path / "pm2ctl.sh",
+        runner=lambda *_: CommandResult(0, json.dumps(payload, separators=(",", ":")), ""),
+        external_helper=external_helper,
+    )
+
+    with pytest.raises(Pm2Error, match="external kill refused"):
+        manager.kill_external(_service(tmp_path), expected_pid=88)
+    external_helper.kill_external.assert_not_called()
 
 
 @pytest.mark.parametrize("service_id", ["bad/id", " space", "", "한글"])

@@ -79,6 +79,6 @@
     <string>@@REPO_ROOT@@/backend/logs/_launchd.err</string>
 
     <key>ProcessType</key>
-    <string>Background</string>
+    <string>Standard</string>
 </dict>
 </plist>

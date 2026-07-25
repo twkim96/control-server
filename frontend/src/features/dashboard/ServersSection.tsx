@@ -110,6 +110,23 @@ export function ServersSection({ showToolbar = true }: ServersSectionProps) {
         </div>
       )}
 
+      {services.data?.supervisor?.degraded && (
+        <div
+          role="status"
+          style={{
+            color: "var(--status-starting)",
+            fontSize: 14,
+            padding: "8px 0",
+          }}
+        >
+          PM2 상태 조회가 지연되어 마지막 정상 상태를 표시 중입니다
+          {services.data.supervisor.snapshot_age_seconds !== null
+            ? ` (${Math.round(services.data.supervisor.snapshot_age_seconds)}초 전)`
+            : ""}
+          . 시작·중지·재시작은 PM2의 확정 응답이 있을 때만 실행됩니다.
+        </div>
+      )}
+
       <ServerTable
         services={filtered}
         onMutated={() => services.refresh()}

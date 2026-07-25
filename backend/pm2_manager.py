@@ -7,6 +7,7 @@ This module never uses the user's default ~/.pm2 instance.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import subprocess
@@ -54,6 +55,7 @@ Runner = Callable[[list[str], dict[str, str], float], CommandResult]
 
 _NAME_PREFIX = "server-control--"
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+_log = logging.getLogger("server_control.pm2")
 
 
 class Pm2Manager:
@@ -64,8 +66,10 @@ class Pm2Manager:
         *,
         wrapper: str | os.PathLike[str] | None = None,
         runner: Runner | None = None,
-        snapshot_ttl_seconds: float = 2.0,
-        command_timeout_seconds: float = 8.0,
+        snapshot_ttl_seconds: float = 10.0,
+        command_timeout_seconds: float = 15.0,
+        snapshot_retry_seconds: float = 15.0,
+        slow_refresh_seconds: float = 2.0,
         clock: Callable[[], float] = time.monotonic,
         external_helper: ProcessManager | None = None,
     ) -> None:
@@ -83,13 +87,20 @@ class Pm2Manager:
         self._runner = runner or self._default_runner
         self._ttl = max(0.0, snapshot_ttl_seconds)
         self._timeout = max(0.1, command_timeout_seconds)
+        self._snapshot_retry = max(0.1, snapshot_retry_seconds)
+        self._slow_refresh = max(0.1, slow_refresh_seconds)
         self._clock = clock
         self._external_helper = external_helper
 
         self._condition = threading.Condition()
         self._snapshot: dict[str, Pm2Process] = {}
         self._snapshot_at = 0.0
+        self._snapshot_invalidated = False
         self._snapshot_loading = False
+        self._snapshot_refresh_started_at = 0.0
+        self._snapshot_last_attempt_at = 0.0
+        self._snapshot_last_error: str | None = None
+        self._closed = False
         self._op_locks: dict[str, threading.RLock] = {}
         self.supports_adoption = False
 
@@ -186,42 +197,133 @@ class Pm2Manager:
         os.replace(tmp, path)
         return path
 
-    def snapshot(self, *, force: bool = False) -> dict[str, Pm2Process]:
+    def snapshot(
+        self,
+        *,
+        force: bool = False,
+        nonblocking: bool = False,
+    ) -> dict[str, Pm2Process]:
         with self._condition:
             now = self._clock()
-            if not force and self._snapshot_at and now - self._snapshot_at < self._ttl:
+            if (
+                not force
+                and self._snapshot_at
+                and not self._snapshot_invalidated
+                and now - self._snapshot_at < self._ttl
+            ):
                 return dict(self._snapshot)
+
+            # Once one valid snapshot exists, read-only API traffic never waits
+            # for the PM2 CLI. One daemon thread refreshes it while all readers
+            # keep receiving the last known-good state. Mutations pass force=True
+            # and still require a confirmed PM2 response.
+            if nonblocking and not force:
+                self._start_background_refresh_locked(now)
+                return dict(self._snapshot)
+
             while self._snapshot_loading:
                 self._condition.wait(timeout=self._timeout)
                 now = self._clock()
-                if self._snapshot_at and now - self._snapshot_at < self._ttl:
+                if (
+                    self._snapshot_at
+                    and not self._snapshot_invalidated
+                    and now - self._snapshot_at < self._ttl
+                ):
                     return dict(self._snapshot)
+                if not self._snapshot_loading and not self._snapshot_at and self._snapshot_last_error:
+                    raise Pm2Error(self._snapshot_last_error)
             self._snapshot_loading = True
+            self._snapshot_refresh_started_at = now
+            self._snapshot_last_attempt_at = now
 
         try:
             fresh = self._fetch_snapshot()
-        except Exception:
-            with self._condition:
-                self._snapshot_loading = False
-                self._condition.notify_all()
+        except Exception as exc:
+            self._finish_snapshot_refresh(error=exc)
             raise
 
+        self._finish_snapshot_refresh(fresh=fresh)
+        return dict(fresh)
+
+    def snapshot_diagnostics(self) -> dict[str, object]:
+        """Safe PM2 read health for the API; never includes PM2 stdout/env."""
+
         with self._condition:
-            self._snapshot = fresh
-            self._snapshot_at = self._clock()
+            now = self._clock()
+            age = max(0.0, now - self._snapshot_at) if self._snapshot_at else None
+            refresh_seconds = (
+                max(0.0, now - self._snapshot_refresh_started_at)
+                if self._snapshot_loading and self._snapshot_refresh_started_at
+                else None
+            )
+            degraded = bool(
+                self._snapshot_last_error is not None
+                or (refresh_seconds is not None and refresh_seconds >= self._slow_refresh)
+            )
+            return {
+                "backend": "pm2",
+                "degraded": degraded,
+                "refreshing": self._snapshot_loading,
+                "snapshot_age_seconds": round(age, 3) if age is not None else None,
+                "last_error": self._snapshot_last_error,
+            }
+
+    def _start_background_refresh_locked(self, now: float) -> None:
+        if self._closed or self._snapshot_loading:
+            return
+        if self._snapshot_last_attempt_at and now - self._snapshot_last_attempt_at < self._snapshot_retry:
+            return
+        self._snapshot_loading = True
+        self._snapshot_refresh_started_at = now
+        self._snapshot_last_attempt_at = now
+        thread = threading.Thread(
+            target=self._refresh_snapshot_background,
+            name="pm2-snapshot-refresh",
+            daemon=True,
+        )
+        thread.start()
+
+    def _refresh_snapshot_background(self) -> None:
+        try:
+            fresh = self._fetch_snapshot()
+        except Exception as exc:
+            self._finish_snapshot_refresh(error=exc)
+            _log.warning("PM2 snapshot refresh failed; serving last known-good state: %s", exc)
+            return
+        self._finish_snapshot_refresh(fresh=fresh)
+
+    def _finish_snapshot_refresh(
+        self,
+        *,
+        fresh: dict[str, Pm2Process] | None = None,
+        error: Exception | None = None,
+    ) -> None:
+        with self._condition:
+            if error is None and fresh is not None:
+                self._snapshot = fresh
+                self._snapshot_at = self._clock()
+                self._snapshot_invalidated = False
+                self._snapshot_last_error = None
+            elif error is not None:
+                # Pm2Error messages are deliberately command-only and never
+                # include raw stdout/stderr or process environments.
+                self._snapshot_last_error = str(error)
             self._snapshot_loading = False
+            self._snapshot_refresh_started_at = 0.0
             self._condition.notify_all()
-            return dict(fresh)
 
     def invalidate(self) -> None:
         with self._condition:
-            self._snapshot_at = 0.0
+            self._snapshot_invalidated = True
+            # Explicit state/config mutations should be refreshable immediately.
+            # The retry throttle still applies after a background refresh fails.
+            self._snapshot_last_attempt_at = 0.0
 
     def get_process(self, service_id: str, *, force: bool = False) -> Pm2Process | None:
         return self.snapshot(force=force).get(service_id)
 
-    def get_state(self, service_id: str) -> RuntimeState:
-        process = self.get_process(service_id)
+    def get_state(self, service_id: str, *, nonblocking: bool = False) -> RuntimeState:
+        process = self.snapshot(nonblocking=nonblocking).get(service_id)
         if process is None:
             return RuntimeState()
         pid = process.pid if process.alive else None
@@ -259,8 +361,19 @@ class Pm2Manager:
         state = self.get_state(service_id)
         return state, state.pid is not None
 
+    def get_state_readonly(self, service_id: str) -> RuntimeState:
+        return self.get_state(service_id, nonblocking=True)
+
+    def inspect_state_readonly(self, service_id: str) -> tuple[RuntimeState, bool]:
+        state = self.get_state_readonly(service_id)
+        return state, state.pid is not None
+
     def is_alive(self, service_id: str) -> bool:
         return self.inspect_state(service_id)[1]
+
+    def is_alive_confirmed(self, service_id: str) -> bool:
+        process = self.get_process(service_id, force=True)
+        return process is not None and process.alive
 
     def start(self, service: ServiceConfig) -> Pm2Process:
         with self._op_lock(service.id):
@@ -377,10 +490,17 @@ class Pm2Manager:
     def kill_external(self, service: ServiceConfig, **kwargs):
         if self._external_helper is None:
             raise Pm2Error("external process helper is not configured")
+        managed = self.get_process(service.id, force=True)
+        if managed is not None and managed.alive:
+            raise Pm2Error(
+                f"{service.id} is managed by PM2 (pid={managed.pid}); external kill refused"
+            )
         return self._external_helper.kill_external(service, **kwargs)
 
     def shutdown(self) -> None:
-        self.invalidate()
+        with self._condition:
+            self._closed = True
+            self._snapshot_invalidated = True
 
     def _fetch_snapshot(self) -> dict[str, Pm2Process]:
         result = self._command(["jlist"])
@@ -419,14 +539,39 @@ class Pm2Manager:
     def _command(self, args: list[str]) -> CommandResult:
         env = os.environ.copy()
         env["CONTROL_PM2_HOME"] = str(self._runtime_root)
+        started_at = time.monotonic()
         try:
             result = self._runner([str(self._wrapper), *args], env, self._timeout)
         except subprocess.TimeoutExpired as exc:
+            elapsed = time.monotonic() - started_at
+            _log.warning(
+                "PM2 command timed out: command=%s elapsed=%.3fs timeout=%.3fs",
+                args[0],
+                elapsed,
+                self._timeout,
+            )
             raise Pm2Error(f"PM2 command timed out: {args[0]}") from exc
         except OSError as exc:
+            elapsed = time.monotonic() - started_at
+            _log.warning(
+                "PM2 command could not start: command=%s elapsed=%.3fs error_type=%s",
+                args[0],
+                elapsed,
+                type(exc).__name__,
+            )
             raise Pm2Error(f"PM2 command could not start: {args[0]}") from exc
+        elapsed = time.monotonic() - started_at
         if result.returncode != 0:
+            _log.warning(
+                "PM2 command failed: command=%s elapsed=%.3fs returncode=%s stderr_bytes=%s",
+                args[0],
+                elapsed,
+                result.returncode,
+                len(result.stderr.encode("utf-8", errors="replace")),
+            )
             raise Pm2Error(f"PM2 command failed: {args[0]}")
+        if elapsed >= 1.0:
+            _log.info("PM2 command slow: command=%s elapsed=%.3fs", args[0], elapsed)
         return result
 
     @staticmethod

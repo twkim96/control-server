@@ -23,7 +23,7 @@
 
 - Backend: Python, Flask, Waitress, psutil, ruamel.yaml
 - Frontend: React, TypeScript, Vite
-- Runtime: macOS launchd (Control Server), isolated PM2 (managed services, v1.4.0)
+- Runtime: macOS launchd (Control Server), isolated PM2 (managed services, v1.4.1)
 - Configuration: YAML
 
 프로젝트의 HTTP API는 [API.md](./API.md)를 참고하세요.
@@ -331,6 +331,33 @@ bash launchd/install.sh status
 PM2 모드에서는 자동 입양하지 않는 것이 정상입니다. 서비스 상세의
 `adopt_diagnostics`에서 포트 점유 PID와 `pm2_exclusive`,
 `cmdline_mismatch`, `cwd_mismatch`, `health_failed` 등의 사유를 확인하세요.
+
+### `PM2 command timed out: jlist`
+
+Servers 목록은 직전 정상 PM2 snapshot이 있으면 그대로 표시하면서 background에서 상태를
+다시 읽는다. PM2 갱신이 2초 이상 지연되거나 실패하면 화면에 “마지막 정상 상태 표시 중”
+경고가 나타난다. 이때 조회 화면은 유지되지만 시작·중지·재시작은 PM2 응답을 확인하지
+못하면 실패한다.
+
+Control Server 시작 시 autostart 확인도 background에서 실행하므로 느린 `jlist`가 9000
+리스너 시작을 지연시키지 않는다. 최초 snapshot이 아직 없으면 Servers 탭은 잠시
+`unknown` 상태를 표시하고 background 조회가 끝난 다음 정상 상태로 갱신된다.
+
+`backend/logs/_launchd.err`에서 `PM2 command slow`, `timed out`, `returncode`,
+`stderr_bytes`를 확인한다. 보안을 위해 PM2 stdout/stderr 원문과 서비스 환경변수는 로그에
+기록하지 않는다. 전용 daemon을 확인할 때는 bare `pm2` 대신 다음 wrapper만 사용한다.
+
+Control Server LaunchAgent는 사용자 요청을 직접 처리하므로 `ProcessType=Standard`를
+사용한다. 무제한 `Interactive`는 사용하지 않는다. wrapper는 오래된 Background plist나
+다른 background 호출에서도 PM2 Node CLI만 macOS 앱 자원 정책으로 실행한다.
+
+wrapper는 전용 `PM2_HOME` 안의 PID lock으로 CLI 호출도 직렬화한다. 여러 브라우저 탭,
+Control Server와 터미널 명령이 겹쳐도 God daemon을 중복 생성하지 않는다. 일반 상태
+snapshot은 10초간 재사용하며 start/stop/restart 뒤에는 즉시 강제 갱신한다.
+
+```bash
+scripts/pm2ctl.sh jlist
+```
 
 ### SSE는 연결됐지만 로그가 없음
 

@@ -14,6 +14,7 @@ import argparse
 import logging
 import os
 import sys
+import threading
 from pathlib import Path
 
 import psutil
@@ -130,11 +131,31 @@ def create_app(
         )
 
     if run_autostart:
+        lifecycle_thread = threading.Thread(
+            target=_run_startup_lifecycle,
+            args=(registry, process_manager),
+            name="control-startup-lifecycle",
+            daemon=True,
+        )
+        lifecycle_thread.start()
+        app.config["startup_lifecycle_thread"] = lifecycle_thread
+
+    return app
+
+
+def _run_startup_lifecycle(
+    registry: ServiceRegistry,
+    process_manager: ProcessManager,
+) -> None:
+    """Run service reconciliation without delaying the Control Server listener."""
+
+    log = logging.getLogger("server_control.startup")
+    try:
         if getattr(process_manager, "supports_adoption", True):
             _run_adopt_pass(registry, process_manager)
         _run_autostart(registry, process_manager)
-
-    return app
+    except Exception as exc:  # noqa: BLE001
+        log.warning("background startup lifecycle failed: %s", exc)
 
 
 def _run_adopt_pass(registry: ServiceRegistry, process_manager: ProcessManager) -> None:
@@ -159,7 +180,12 @@ def _run_autostart(registry: ServiceRegistry, process_manager: ProcessManager) -
     for service in registry.list_services():
         if not service.lifecycle.autostart:
             continue
-        if process_manager.is_alive(service.id):
+        confirmed_is_alive = getattr(
+            process_manager,
+            "is_alive_confirmed",
+            process_manager.is_alive,
+        )
+        if confirmed_is_alive(service.id):
             log.info("autostart skip (already alive): %s", service.id)
             continue
         try:

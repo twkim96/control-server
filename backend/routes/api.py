@@ -56,6 +56,11 @@ def _resource_sampler() -> ResourceSampler:
     return current_app.config["resource_sampler"]
 
 
+def _supervisor_diagnostics() -> dict[str, object] | None:
+    diagnostics = getattr(_process_manager(), "snapshot_diagnostics", None)
+    return diagnostics() if callable(diagnostics) else None
+
+
 def _build_service_payload(
     service: ServiceConfig,
     *,
@@ -100,7 +105,13 @@ def _build_service_payload(
 
 def _resource_state_for(service_id: str, result: HealthResult) -> RuntimeState:
     if result.pid is not None:
-        return _process_manager().get_state(service_id)
+        process_manager = _process_manager()
+        get_state = getattr(
+            process_manager,
+            "get_state_readonly",
+            process_manager.get_state,
+        )
+        return get_state(service_id)
     if result.unmanaged_pid is not None:
         # 외부 인스턴스도 create_time을 채워 PID 재사용 가드를 살린다. 조회 실패 시
         # None으로 두면 sampler가 현재 PID를 그대로 샘플링한다 (기존 동작).
@@ -126,16 +137,18 @@ def list_services():
     # 목록 빌드 전에 헬스 프로브를 병렬로 미리 채운다. 이후 서비스별 순차 check()는
     # 캐시를 재사용하므로 직렬 합(서비스 수 × timeout)이 병렬 최댓값으로 줄어든다.
     health_snapshot = _health_checker().warm_health_snapshot(services)
-    return jsonify(
-        {
-            "services": [
-                _build_service_payload(
-                    s, include_diagnostics=False, health_snapshot=health_snapshot
-                )
-                for s in services
-            ]
-        }
-    )
+    payload: dict[str, object] = {
+        "services": [
+            _build_service_payload(
+                s, include_diagnostics=False, health_snapshot=health_snapshot
+            )
+            for s in services
+        ]
+    }
+    supervisor = _supervisor_diagnostics()
+    if supervisor is not None:
+        payload["supervisor"] = supervisor
+    return jsonify(payload)
 
 
 @bp.get("/services/<sid>")

@@ -102,7 +102,12 @@ class HealthChecker:
         force_health_probe: bool = False,
         health_snapshot: dict[tuple[str, str | None, bool, float], dict[str, Any]] | None = None,
     ) -> HealthResult:
-        state, alive = self._pm.inspect_state(service.id)
+        inspect_state = getattr(
+            self._pm,
+            "inspect_state_readonly",
+            self._pm.inspect_state,
+        )
+        state, alive = inspect_state(service.id)
 
         # 추적 중인 PID가 없는데 외부에 health URL이 응답하고 있고, 정책이 manage라면
         # 입양을 시도한다 (v1.2.5). status_only/manage 둘 다 health URL은 한 번 묻는다.

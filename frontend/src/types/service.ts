@@ -174,8 +174,17 @@ export interface ServiceMeta {
   runtime?: RuntimeInfo;
 }
 
+export interface SupervisorDiagnostics {
+  backend: "pm2";
+  degraded: boolean;
+  refreshing: boolean;
+  snapshot_age_seconds: number | null;
+  last_error: string | null;
+}
+
 export interface ServicesResponse {
   services: ServiceMeta[];
+  supervisor?: SupervisorDiagnostics;
 }
 
 export interface ActionResponse {

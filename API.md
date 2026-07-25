@@ -181,9 +181,26 @@ curl -sS -b "$COOKIE_JAR" \
 
 ```json
 {
-  "services": []
+  "services": [],
+  "supervisor": {
+    "backend": "pm2",
+    "degraded": false,
+    "refreshing": false,
+    "snapshot_age_seconds": 0.4,
+    "last_error": null
+  }
 }
 ```
+
+PM2 운영 모드의 목록 조회는 한 번 이상 성공한 상태 snapshot이 있으면 PM2 CLI를
+동기적으로 기다리지 않는다. TTL이 지난 경우 단일 background refresh를 시작하고 직전
+정상 snapshot을 즉시 반환한다. refresh가 2초 이상 지연되거나 실패하면
+`supervisor.degraded=true`가 되며 Servers 화면에 stale 상태 경고가 표시된다.
+
+캐시가 전혀 없는 최초 조회도 PM2 CLI를 기다리지 않고 서비스 상태를 `unknown`으로 표시한
+뒤 background에서 채운다. 시작·중지·재시작, 삭제 같은 mutation은 stale/빈 snapshot을
+성공으로 사용하지 않으며 PM2의 확정 응답이 없으면 실패한다. `last_error`에는 명령 종류만
+포함하고 PM2 stdout/stderr와 환경변수는 포함하지 않는다.
 
 `GET /api/services/<sid>`는 envelope 없이 단일 `ServiceMeta` 객체를 반환합니다.
 목록은 비용이 큰 입양 진단과 포트 상세를 생략하고, 상세 응답은
