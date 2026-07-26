@@ -73,6 +73,7 @@ def create_app(
             log_dir,
             runner=pm2_runner,
             external_helper=external_helper,
+            log_manager=log_manager,
         )
     elif process_backend == "native":
         process_manager = ProcessManager(runtime_dir, log_manager)

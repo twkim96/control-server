@@ -151,6 +151,52 @@ def test_pm2_backend_preserves_service_api_contract(tmp_path: Path, monkeypatch)
     assert app.config["process_backend"] == "pm2"
 
 
+def test_pm2_reload_refuses_to_orphan_running_removed_service(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv(PASSWORD_ENV, "secret")
+    config = tmp_path / "config.yml"
+    _config(config, tmp_path)
+    fake = FakePm2()
+    app = backend_app.create_app(
+        config_path=config,
+        log_dir=tmp_path / "logs",
+        runtime_dir=tmp_path / "runtime",
+        frontend_dist=tmp_path / "dist",
+        process_backend="pm2",
+        pm2_runner=fake,
+    )
+    app.config["TESTING"] = True
+    client = app.test_client()
+    csrf = _login(client)
+    assert client.post(
+        "/api/services/dummy/actions/start",
+        headers={"X-CSRF-Token": csrf},
+    ).status_code == 200
+
+    config.write_text(
+        dedent(
+            f"""
+            controller:
+              host: "127.0.0.1"
+              port: 9000
+              allowed_path_roots: ["{tmp_path}"]
+            services: []
+            actions: []
+            """
+        ).strip(),
+        encoding="utf-8",
+    )
+
+    response = client.post("/api/config/reload", headers={"X-CSRF-Token": csrf})
+
+    assert response.status_code == 409
+    assert response.get_json()["error"] == "config_reload_blocked"
+    assert app.config["registry"].get("dummy").id == "dummy"
+    assert fake.status == "online"
+
+
 def test_pm2_cold_list_failure_is_degraded_and_redacted(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv(PASSWORD_ENV, "secret")
     config = tmp_path / "config.yml"
@@ -208,6 +254,11 @@ def test_pm2_list_uses_last_good_snapshot_after_transient_failure(
     initial = client.get("/api/services")
     assert initial.status_code == 200
     manager = app.config["process_manager"]
+    for _ in range(100):
+        if manager.snapshot_diagnostics()["snapshot_age_seconds"] is not None:
+            break
+        time.sleep(0.01)
+    assert manager.snapshot_diagnostics()["snapshot_age_seconds"] is not None
     manager.invalidate()
     fake.fail_jlist = True
 

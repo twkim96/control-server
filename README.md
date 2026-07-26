@@ -203,12 +203,19 @@ Control Server는 시작 전 포트 점유를 확인하며, 등록 서비스는 
 `backend/runtime/pm2` 아래의 PM2 daemon에서 `server-control--<service_id>` 이름으로
 관리합니다. 사용자 기본 `~/.pm2`와는 별개입니다.
 
+PM2 운영 모드의 `process_stop` primary signal은 `SIGINT`여야 하며, 설정된 `SIGTERM`
+fallback 뒤 마지막 `SIGKILL`은 PM2가 수행합니다. 로그의 `max_bytes`/`keep` 회전은 PM2가
+stopped를 확정한 뒤 또는 stopped 서비스를 다시 시작하기 직전에 적용됩니다. 실행 중인
+서비스 정의를 config에서 제거하면 orphan 방지를 위해 reload가 409로 거부되므로 먼저
+서비스를 중지하세요.
+
 ### 외부 프로세스와 PM2 소유권
 
 PM2 운영 모드에서는 같은 포트에서 외부 프로세스가 발견돼도 자동 입양하지 않습니다.
-서비스 상세에는 `running_external`과 `pm2_exclusive` 진단이 표시됩니다. 중복 실행을
-피하려면 외부 프로세스의 명령과 cwd를 확인해 정상 종료한 뒤 Control Server에서
-서비스를 시작하세요.
+서비스 상세에는 `running_external`과 함께 실제 안전 진단 사유가 표시됩니다. 명령/cwd/
+health 검증을 통과한 외부 프로세스만 `pm2_exclusive`가 되고, 불일치는
+`cmdline_mismatch`, `cwd_mismatch`, `health_failed` 등 원래 사유를 유지합니다. 중복 실행을
+피하려면 외부 프로세스를 확인해 정상 종료한 뒤 Control Server에서 서비스를 시작하세요.
 
 `kill_external`은 기존 안전 검증을 통과한 외부 프로세스에만 사용할 수 있습니다.
 명령/cwd/health가 일치하지 않으면 종료를 거부합니다.

@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import threading
 import time
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -20,6 +22,7 @@ from config_schema import (
     StopStrategy,
 )
 from pm2_manager import CommandResult, Pm2Error, Pm2Manager
+from process_manager import AdoptDiagnostics, AdoptEvaluation, RuntimeState
 
 
 def _service(tmp_path: Path, *, sid: str = "example") -> ServiceConfig:
@@ -75,7 +78,9 @@ def test_manifest_preserves_command_args_env_and_private_mode(tmp_path: Path) ->
     assert app["interpreter"] == "none"
     assert app["cwd"] == str(tmp_path)
     assert app["env"] == {"EXAMPLE": "yes", "PORT": "12345", "PYTHONUNBUFFERED": "1"}
-    assert app["kill_timeout"] == 7500
+    # PM2 owns the final SIGKILL deadline. Reserve one timeout window for
+    # SIGINT and one for the configured graceful SIGTERM fallback.
+    assert app["kill_timeout"] == 15000
     assert app["log_file"] == str(tmp_path / "logs" / "example.log")
     assert os.stat(path).st_mode & 0o777 == 0o600
     assert os.stat(path.parent).st_mode & 0o777 == 0o700
@@ -94,6 +99,18 @@ def test_manifest_resolves_relative_https_paths(tmp_path: Path) -> None:
     assert app["env"]["HTTPS"] == "1"
     assert app["env"]["CERT"] == str(tmp_path / "certs/a.crt")
     assert app["env"]["KEY"] == str(tmp_path / "certs/a.key")
+
+
+def test_manifest_rejects_primary_signal_pm2_cannot_honor(tmp_path: Path) -> None:
+    manager = _manager(tmp_path, lambda *_: CommandResult(0, "[]", ""))
+    service = _service(tmp_path)
+    stop = replace(
+        service.actions[0],
+        stop_strategy=StopStrategy("SIGTERM", 1.0, False, ("SIGKILL",)),
+    )
+
+    with pytest.raises(Pm2Error, match="SIGINT만 지원"):
+        manager.build_manifest(replace(service, actions=(stop,)))
 
 
 def test_snapshot_ignores_banner_foreign_apps_and_env(tmp_path: Path) -> None:
@@ -382,6 +399,253 @@ def test_external_kill_requires_confirmed_absence_from_pm2(tmp_path: Path) -> No
     with pytest.raises(Pm2Error, match="external kill refused"):
         manager.kill_external(_service(tmp_path), expected_pid=88)
     external_helper.kill_external.assert_not_called()
+
+
+def test_reconcile_rejects_removing_online_pm2_service(tmp_path: Path) -> None:
+    service = _service(tmp_path, sid="removed")
+    payload = [
+        {
+            "name": "server-control--removed",
+            "pid": 88,
+            "pm2_env": {"status": "online"},
+        }
+    ]
+    manager = _manager(
+        tmp_path,
+        lambda *_: CommandResult(0, json.dumps(payload, separators=(",", ":")), ""),
+    )
+    manager.activate_service(service)
+
+    with pytest.raises(Pm2Error, match="config reload"):
+        manager.reconcile_service_definitions(())
+
+    assert manager._active_services[service.id] == service
+    assert service.id not in manager._retired_services
+
+
+def test_reconcile_cleans_stopped_entry_and_blocks_stale_start(tmp_path: Path) -> None:
+    service = _service(tmp_path, sid="removed")
+    commands: list[list[str]] = []
+    payload = [
+        {
+            "name": "server-control--removed",
+            "pid": 0,
+            "pm2_env": {"status": "stopped"},
+        }
+    ]
+
+    def runner(argv, _env, _timeout):
+        commands.append(argv[1:])
+        if argv[1] == "jlist":
+            return CommandResult(0, json.dumps(payload, separators=(",", ":")), "")
+        return CommandResult(0, "ok", "")
+
+    manager = _manager(tmp_path, runner)
+    manager.activate_service(service)
+    manifest = manager.write_manifest(service)
+
+    manager.reconcile_service_definitions(())
+
+    assert ["delete", "server-control--removed"] in commands
+    assert not manifest.exists()
+    assert service.id in manager._retired_services
+    with pytest.raises(Pm2Error, match="삭제된 서비스"):
+        manager.start(service)
+
+
+def test_reconcile_blocks_stale_definition_after_reload(tmp_path: Path) -> None:
+    manager = _manager(tmp_path, lambda *_: CommandResult(0, "[]", ""))
+    old = _service(tmp_path, sid="reloadable")
+    new = replace(old, name="New definition")
+    manager.activate_service(old)
+
+    manager.reconcile_service_definitions((new,))
+
+    with pytest.raises(Pm2Error, match="최신 설정"):
+        manager.start(old)
+
+
+def test_reconcile_removal_serializes_with_concurrent_start(tmp_path: Path) -> None:
+    service = _service(tmp_path, sid="removed")
+    first_snapshot_done = threading.Event()
+    release_reconcile = threading.Event()
+    jlist_calls = 0
+
+    def runner(argv, _env, _timeout):
+        nonlocal jlist_calls
+        if argv[1] == "jlist":
+            jlist_calls += 1
+            if jlist_calls == 1:
+                first_snapshot_done.set()
+                assert release_reconcile.wait(timeout=5)
+            return CommandResult(0, "[]", "")
+        raise AssertionError(f"unexpected PM2 command: {argv[1]}")
+
+    manager = _manager(tmp_path, runner)
+    manager.activate_service(service)
+    reload_errors: list[Exception] = []
+    start_errors: list[Exception] = []
+    reload_thread = threading.Thread(
+        target=lambda: _capture_error(
+            reload_errors,
+            lambda: manager.reconcile_service_definitions(()),
+        )
+    )
+    start_thread = threading.Thread(
+        target=lambda: _capture_error(start_errors, lambda: manager.start(service))
+    )
+
+    reload_thread.start()
+    assert first_snapshot_done.wait(timeout=2)
+    start_thread.start()
+    time.sleep(0.05)
+    assert start_thread.is_alive()
+    release_reconcile.set()
+    reload_thread.join(timeout=2)
+    start_thread.join(timeout=2)
+
+    assert reload_errors == []
+    assert len(start_errors) == 1
+    assert "삭제된 서비스" in str(start_errors[0])
+
+
+def test_stop_rotates_log_with_service_policy(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    online = True
+
+    def runner(argv, _env, _timeout):
+        nonlocal online
+        if argv[1] == "stop":
+            online = False
+            return CommandResult(0, "ok", "")
+        payload = [
+            {
+                "name": "server-control--example",
+                "pid": 88 if online else 0,
+                "pm2_env": {
+                    "status": "online" if online else "stopped",
+                    "kill_timeout": 7500,
+                },
+            }
+        ]
+        return CommandResult(0, json.dumps(payload, separators=(",", ":")), "")
+
+    manager = _manager(tmp_path, runner)
+    manager.activate_service(service)
+    log_path = tmp_path / "logs" / "example.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_path.write_bytes(b"x" * 2048)
+
+    manager.stop(service, service.actions[0].stop_strategy)
+
+    assert not log_path.exists()
+    assert (tmp_path / "logs" / "example.log.1").stat().st_size == 2048
+
+
+def test_stop_schedules_graceful_fallback_before_pm2_kill_deadline(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    online = True
+    stop_timeout = 0.0
+
+    def runner(argv, _env, timeout):
+        nonlocal online, stop_timeout
+        if argv[1] == "stop":
+            stop_timeout = timeout
+            online = False
+            return CommandResult(0, "ok", "")
+        payload = [
+            {
+                "name": "server-control--example",
+                "pid": 88 if online else 0,
+                "pm2_env": {
+                    "status": "online" if online else "stopped",
+                    "kill_timeout": 7500,
+                },
+            }
+        ]
+        return CommandResult(0, json.dumps(payload, separators=(",", ":")), "")
+
+    manager = _manager(tmp_path, runner)
+    manager.activate_service(service)
+    with (
+        patch("pm2_manager._process_tree_identities", return_value=((88, 1.0),)),
+        patch("pm2_manager._send_fallback_signals") as send_fallbacks,
+    ):
+        manager.stop(service, service.actions[0].stop_strategy)
+
+    send_fallbacks.assert_called_once()
+    assert send_fallbacks.call_args.args[1] == ("SIGTERM",)
+    assert send_fallbacks.call_args.args[2] < service.actions[0].stop_strategy.timeout_seconds
+    assert stop_timeout >= 20.0
+
+
+def test_fallback_reaches_child_after_parent_has_exited() -> None:
+    from pm2_manager import _send_fallback_signals
+
+    child = Mock()
+    child.create_time.return_value = 2.0
+    child.is_running.return_value = True
+    child.status.return_value = psutil.STATUS_SLEEPING
+
+    def process_for(pid):
+        if pid == 88:
+            raise psutil.NoSuchProcess(pid)
+        return child
+
+    with (
+        patch("pm2_manager.psutil.Process", side_effect=process_for),
+        patch("pm2_manager.os.kill") as kill,
+    ):
+        _send_fallback_signals(
+            ((88, 1.0), (99, 2.0)),
+            ("SIGTERM",),
+            0.0,
+            threading.Event(),
+        )
+
+    kill.assert_called_once_with(99, int(signal.SIGTERM))
+
+
+@pytest.mark.parametrize(
+    ("ok", "reason", "expected_reason"),
+    [
+        (False, "cmdline_mismatch", "cmdline_mismatch"),
+        (False, "cwd_mismatch", "cwd_mismatch"),
+        (False, "health_failed", "health_failed"),
+        (True, "ok", "pm2_exclusive"),
+    ],
+)
+def test_pm2_adopt_diagnostics_preserve_safety_failures(
+    tmp_path: Path,
+    ok: bool,
+    reason: str,
+    expected_reason: str,
+) -> None:
+    evaluation = AdoptEvaluation(
+        diagnostics=AdoptDiagnostics(ok=ok, reason=reason, candidate_pid=88),
+        candidate=None,
+        state_snapshot=RuntimeState(),
+    )
+    external_helper = Mock()
+    external_helper.evaluate_adopt.return_value = evaluation
+    manager = Pm2Manager(
+        tmp_path / "runtime",
+        tmp_path / "logs",
+        runner=lambda *_: CommandResult(0, "[]", ""),
+        external_helper=external_helper,
+    )
+
+    result = manager.evaluate_adopt(_service(tmp_path))
+
+    assert result.diagnostics.reason == expected_reason
+    assert result.diagnostics.ok is False
+
+
+def _capture_error(errors: list[Exception], operation) -> None:
+    try:
+        operation()
+    except Exception as exc:  # noqa: BLE001 - thread result is asserted by the test
+        errors.append(exc)
 
 
 @pytest.mark.parametrize("service_id", ["bad/id", " space", "", "한글"])

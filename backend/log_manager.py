@@ -87,7 +87,26 @@ class LogManager:
             policy = self._policies.pop(service_id, None)
         if policy is None:
             return
-        self._rotate_if_needed(service_id, policy)
+        self.rotate_if_needed(
+            service_id,
+            max_bytes=policy.max_bytes,
+            keep=policy.keep,
+        )
+
+    def rotate_if_needed(self, service_id: str, *, max_bytes: int, keep: int) -> None:
+        """Rotate a stopped service log using an explicit config policy.
+
+        PM2 owns the child file descriptor, so it cannot use ``open_for_child``.
+        Its adapter calls this only after PM2 confirms the service is stopped (or
+        immediately before a stopped service starts), which preserves the same
+        inode/SSE safety rule as the native process manager.
+        """
+
+        with self._lock:
+            self._rotate_if_needed(
+                service_id,
+                _RotatePolicy(max_bytes=max_bytes, keep=keep),
+            )
 
     # ------------------------------------------------------------------
     # 회전

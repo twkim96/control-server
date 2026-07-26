@@ -231,3 +231,84 @@ def test_real_pm2_stop_does_not_leave_signal_ignoring_child(tmp_path: Path) -> N
             check=False,
         )
         shutil.rmtree(pm2_runtime, ignore_errors=True)
+
+
+def test_real_pm2_stop_delivers_sigterm_fallback_to_child(tmp_path: Path) -> None:
+    parent = tmp_path / "fallback_parent.py"
+    child = tmp_path / "fallback_child.py"
+    child_pid_file = tmp_path / "fallback_child.pid"
+    graceful_marker = tmp_path / "fallback_child.graceful"
+    child.write_text(
+        "import pathlib, signal, sys, time\n"
+        "signal.signal(signal.SIGINT, signal.SIG_IGN)\n"
+        "def stop(*_):\n"
+        "    pathlib.Path(sys.argv[1]).write_text('SIGTERM')\n"
+        "    raise SystemExit(0)\n"
+        "signal.signal(signal.SIGTERM, stop)\n"
+        "while True: time.sleep(0.1)\n",
+        encoding="utf-8",
+    )
+    parent.write_text(
+        "import pathlib, subprocess, sys, time\n"
+        "child = subprocess.Popen([sys.executable, sys.argv[2], sys.argv[3]])\n"
+        "pathlib.Path(sys.argv[1]).write_text(str(child.pid))\n"
+        "while True: time.sleep(0.1)\n",
+        encoding="utf-8",
+    )
+    service = replace(
+        _service(tmp_path, _free_port()),
+        id="pm2_fallback_fixture",
+        command=(
+            sys.executable,
+            "-u",
+            "fallback_parent.py",
+            str(child_pid_file),
+            str(child),
+            str(graceful_marker),
+        ),
+        port=None,
+    )
+    strategy = service.actions[0].stop_strategy
+    assert strategy is not None
+    wrapper = Path(__file__).resolve().parents[2] / "scripts" / "pm2ctl.sh"
+    pm2_runtime = Path(tempfile.mkdtemp(prefix="sc-pm2-fallback-", dir="/private/tmp"))
+    manager = Pm2Manager(
+        pm2_runtime,
+        tmp_path / "logs",
+        wrapper=wrapper,
+        command_timeout_seconds=15.0,
+        snapshot_ttl_seconds=0.1,
+    )
+    pm2_home = pm2_runtime / "pm2"
+    child_pid = None
+    try:
+        manager.activate_service(service)
+        manager.start(service)
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and not child_pid_file.exists():
+            time.sleep(0.05)
+        child_pid = int(child_pid_file.read_text(encoding="utf-8"))
+
+        manager.stop(service, strategy)
+
+        assert graceful_marker.read_text(encoding="utf-8") == "SIGTERM"
+        assert not psutil.pid_exists(child_pid)
+        manager.delete(service.id)
+    finally:
+        if child_pid is not None and psutil.pid_exists(child_pid):
+            try:
+                os.kill(child_pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        env = os.environ.copy()
+        env["CONTROL_PM2_HOME"] = str(pm2_home)
+        subprocess.run(
+            [str(wrapper), "kill"],
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=15,
+            check=False,
+        )
+        shutil.rmtree(pm2_runtime, ignore_errors=True)
