@@ -4,11 +4,14 @@ from __future__ import annotations
 import time
 from pathlib import Path
 from textwrap import dedent
+from unittest.mock import Mock
 
 import psutil
 
 import app as backend_app
 from auth import PASSWORD_ENV
+from pm2_manager import Pm2Error
+from process_manager import RuntimeState
 
 
 def _seed_config(path: Path, *, autostart: bool, child_script: Path) -> None:
@@ -142,3 +145,24 @@ def test_autostart_disabled_by_default(tmp_path, monkeypatch):
     pm = app.config["process_manager"]
     time.sleep(0.3)
     assert not pm.is_alive("auto")
+
+
+def test_autostart_retries_initial_pm2_snapshot_failure(tmp_path, monkeypatch):
+    script = _make_child_script(tmp_path)
+    config = tmp_path / "config.yml"
+    _seed_config(config, autostart=True, child_script=script)
+    from config_loader import load_config
+    from service_registry import ServiceRegistry
+
+    registry = ServiceRegistry(load_config(config))
+    pm = Mock()
+    pm.is_alive_confirmed.side_effect = [Pm2Error("cold jlist"), False]
+    pm.start.return_value = RuntimeState(pid=88)
+    delays: list[float] = []
+    monkeypatch.setattr(backend_app.time, "sleep", delays.append)
+
+    backend_app._run_autostart(registry, pm)
+
+    assert pm.is_alive_confirmed.call_count == 2
+    pm.start.assert_called_once()
+    assert delays == [0.25]

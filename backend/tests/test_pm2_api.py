@@ -195,6 +195,140 @@ def test_pm2_reload_refuses_to_orphan_running_removed_service(
     assert response.get_json()["error"] == "config_reload_blocked"
     assert app.config["registry"].get("dummy").id == "dummy"
     assert fake.status == "online"
+    assert "id: dummy" in config.read_text(encoding="utf-8")
+    checkpoint = tmp_path / "runtime" / "last_good_config.yml"
+    assert checkpoint.is_file()
+    assert checkpoint.stat().st_mode & 0o777 == 0o600
+
+    restarted = backend_app.create_app(
+        config_path=config,
+        log_dir=tmp_path / "logs",
+        runtime_dir=tmp_path / "runtime",
+        frontend_dist=tmp_path / "dist",
+        process_backend="pm2",
+        pm2_runner=fake,
+    )
+    assert restarted.config["registry"].get("dummy").id == "dummy"
+
+
+def test_pm2_reload_refuses_running_runtime_change_and_restores_disk(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv(PASSWORD_ENV, "secret")
+    config = tmp_path / "config.yml"
+    _config(config, tmp_path)
+    original = config.read_text(encoding="utf-8")
+    fake = FakePm2()
+    app = backend_app.create_app(
+        config_path=config,
+        log_dir=tmp_path / "logs",
+        runtime_dir=tmp_path / "runtime",
+        frontend_dist=tmp_path / "dist",
+        process_backend="pm2",
+        pm2_runner=fake,
+    )
+    app.config["TESTING"] = True
+    client = app.test_client()
+    csrf = _login(client)
+    assert client.post(
+        "/api/services/dummy/actions/start",
+        headers={"X-CSRF-Token": csrf},
+    ).status_code == 200
+    config.write_text(original.replace("server.py", "changed.py"), encoding="utf-8")
+
+    response = client.post("/api/config/reload", headers={"X-CSRF-Token": csrf})
+
+    assert response.status_code == 409
+    assert config.read_text(encoding="utf-8") == original
+    assert fake.status == "online"
+
+
+def test_pm2_startup_restores_checkpoint_for_manifest_orphan(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv(PASSWORD_ENV, "secret")
+    config = tmp_path / "config.yml"
+    _config(config, tmp_path)
+    fake = FakePm2()
+    first = backend_app.create_app(
+        config_path=config,
+        log_dir=tmp_path / "logs",
+        runtime_dir=tmp_path / "runtime",
+        frontend_dist=tmp_path / "dist",
+        process_backend="pm2",
+        pm2_runner=fake,
+    )
+    first.config["TESTING"] = True
+    client = first.test_client()
+    csrf = _login(client)
+    assert client.post(
+        "/api/services/dummy/actions/start",
+        headers={"X-CSRF-Token": csrf},
+    ).status_code == 200
+    config.write_text(
+        dedent(
+            f"""
+            controller:
+              host: "127.0.0.1"
+              port: 9000
+              allowed_path_roots: ["{tmp_path}"]
+            services: []
+            actions: []
+            """
+        ).strip(),
+        encoding="utf-8",
+    )
+
+    restarted = backend_app.create_app(
+        config_path=config,
+        log_dir=tmp_path / "logs",
+        runtime_dir=tmp_path / "runtime",
+        frontend_dist=tmp_path / "dist",
+        process_backend="pm2",
+        pm2_runner=fake,
+    )
+
+    assert restarted.config["registry"].get("dummy").id == "dummy"
+    assert "id: dummy" in config.read_text(encoding="utf-8")
+    assert fake.status == "online"
+
+
+def test_pm2_startup_keeps_checkpoint_config_and_marks_legacy_manifest_restart(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv(PASSWORD_ENV, "secret")
+    config = tmp_path / "config.yml"
+    _config(config, tmp_path)
+    fake = FakePm2()
+    first = backend_app.create_app(
+        config_path=config,
+        log_dir=tmp_path / "logs",
+        runtime_dir=tmp_path / "runtime",
+        frontend_dist=tmp_path / "dist",
+        process_backend="pm2",
+        pm2_runner=fake,
+    )
+    service = first.config["registry"].get("dummy")
+    manifest = first.config["process_manager"].write_manifest(service)
+    saved = json.loads(manifest.read_text(encoding="utf-8"))
+    saved["apps"][0]["kill_timeout"] = 100
+    manifest.write_text(json.dumps(saved), encoding="utf-8")
+
+    restarted = backend_app.create_app(
+        config_path=config,
+        log_dir=tmp_path / "logs",
+        runtime_dir=tmp_path / "runtime",
+        frontend_dist=tmp_path / "dist",
+        process_backend="pm2",
+        pm2_runner=fake,
+    )
+
+    assert restarted.config["registry"].get("dummy").id == "dummy"
+    diagnostics = restarted.config["process_manager"].snapshot_diagnostics()
+    assert diagnostics["restart_required_service_ids"] == ["dummy"]
 
 
 def test_pm2_cold_list_failure_is_degraded_and_redacted(tmp_path: Path, monkeypatch) -> None:
@@ -291,6 +425,7 @@ def test_pm2_slow_cold_start_does_not_delay_control_server_or_list_api(
     config = tmp_path / "config.yml"
     _config(config, tmp_path, autostart=True)
     fake = FakePm2()
+    fake.status = "online"
     entered = threading.Event()
     release = threading.Event()
     first_jlist = True
@@ -324,6 +459,7 @@ def test_pm2_slow_cold_start_does_not_delay_control_server_or_list_api(
     assert time.monotonic() - list_started < 0.5
     assert response.status_code == 200
     assert response.get_json()["supervisor"]["refreshing"] is True
+    assert response.get_json()["services"][0]["runtime"]["state"] == "unknown"
 
     release.set()
     lifecycle_thread = app.config["startup_lifecycle_thread"]

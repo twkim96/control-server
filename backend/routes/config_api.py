@@ -21,6 +21,7 @@ from typing import Any
 from flask import Blueprint, current_app, jsonify, request
 
 from auth import auth_required, csrf_required
+from config_checkpoint import ConfigCheckpoint, ConfigCheckpointError
 from config_loader import ConfigError, load_config, validate_command_safety
 from config_writer import (
     ConfigWriteError,
@@ -56,10 +57,25 @@ def _process_manager() -> ProcessManager:
     return current_app.config["process_manager"]
 
 
+def _config_checkpoint() -> ConfigCheckpoint:
+    return current_app.config["config_checkpoint"]
+
+
 def _reload_registry() -> None:
     with _config_reconcile_lock:
-        new_cfg = load_config(_config_path())
-        _process_manager().reconcile_service_definitions(new_cfg.services)
+        try:
+            new_cfg = load_config(_config_path())
+            _process_manager().reconcile_service_definitions(new_cfg.services)
+        except (ConfigError, ProcessError):
+            try:
+                _config_checkpoint().restore_to(_config_path())
+            except ConfigCheckpointError:
+                _log.exception("failed to restore last-good config after rejected reload")
+            raise
+        try:
+            _config_checkpoint().save_from(_config_path())
+        except ConfigCheckpointError as exc:
+            raise ConfigWriteError(str(exc)) from exc
         _registry().reload(new_cfg)
         # 파일 브라우저는 controller.allowed_path_roots를 따른다.
         current_app.config["file_browser"] = FileBrowser(new_cfg.controller.allowed_path_roots)
@@ -208,6 +224,8 @@ def reload_config():
         _reload_registry()
     except ConfigError as exc:
         return jsonify({"error": "config_invalid", "message": str(exc)}), 400
+    except ConfigWriteError as exc:
+        return jsonify({"error": "config_write_failed", "message": str(exc)}), 500
     except ProcessError as exc:
         return jsonify({"error": "config_reload_blocked", "message": str(exc)}), 409
     return jsonify({"ok": True})

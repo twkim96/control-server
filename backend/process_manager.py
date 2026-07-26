@@ -836,6 +836,7 @@ class ProcessManager:
         service: ServiceConfig,
         *,
         health_ok: bool | None = None,
+        require_manage_policy: bool = True,
     ) -> AdoptEvaluation:
         """입양 신뢰 조건을 순서대로 검증한다 (v1.2.6 기준).
 
@@ -886,7 +887,9 @@ class ProcessManager:
                 state_snapshot=state_snapshot,
             )
 
-        policy_not_manage = service.lifecycle.unmanaged_policy != "manage"
+        policy_not_manage = (
+            require_manage_policy and service.lifecycle.unmanaged_policy != "manage"
+        )
         if service.port is None:
             return fail("policy_not_manage" if policy_not_manage else "no_port")
 
@@ -907,6 +910,10 @@ class ProcessManager:
         # 안전 가드: 자기 자신이나 다른 추적 중 PID는 거부.
         if candidate_pid == os.getpid():
             return fail("pid_is_self", candidate_pid=candidate_pid)
+        with self._lock:
+            for sid, other in self._states.items():
+                if sid != service.id and other.pid == candidate_pid and other.create_time is None:
+                    return fail("pid_tracked_by_other", candidate_pid=candidate_pid)
         # cmdline + cwd + create_time + pgid 한 번에 안전하게 가져오기.
         try:
             proc = psutil.Process(candidate_pid)
@@ -992,6 +999,20 @@ class ProcessManager:
             state_snapshot=state_snapshot,
         )
 
+    def evaluate_external_identity(
+        self,
+        service: ServiceConfig,
+        *,
+        health_ok: bool | None = None,
+    ) -> AdoptEvaluation:
+        """Fresh cmdline/cwd/health identity proof for destructive external kill."""
+
+        return self._evaluate_adopt(
+            service,
+            health_ok=health_ok,
+            require_manage_policy=False,
+        )
+
     def try_adopt_all(self, services) -> list[str]:
         """주어진 서비스들에 try_adopt 일괄 시도. 입양 성공한 service_id 리스트 반환."""
         adopted: list[str] = []
@@ -1011,6 +1032,7 @@ class ProcessManager:
         expected_pid: int | None = None,
         forbidden_pids: set[int] | None = None,
         poll_interval: float = 0.2,
+        evaluation: AdoptEvaluation | None = None,
     ) -> dict[str, Any]:
         """포트를 점유한 외부 인스턴스 프로세스를 종료한다.
 
@@ -1032,9 +1054,15 @@ class ProcessManager:
             )
 
         with self._op_lock(service.id):
+            evaluation = evaluation or self.evaluate_external_identity(service)
+            diagnostics = evaluation.diagnostics
+            if not diagnostics.ok or evaluation.candidate is None:
+                raise ProcessError(_external_kill_rejection_message(service, diagnostics.reason))
+            if expected_pid is not None and diagnostics.candidate_pid != expected_pid:
+                raise ProcessError("외부 종료 대상이 health 확인 뒤 변경되었습니다. 다시 확인하세요.")
             return self._kill_external_locked(
                 service,
-                expected_pid=expected_pid,
+                expected_pid=diagnostics.candidate_pid,
                 forbidden_pids=forbidden_pids,
                 poll_interval=poll_interval,
             )
@@ -1240,6 +1268,16 @@ def _adopt_backoff_seconds(reason: str) -> float:
     if reason in {"proc_inspect_failed", "no_port_holder", "health_failed"}:
         return 2.0
     return 0.0
+
+
+def _external_kill_rejection_message(service: ServiceConfig, reason: str) -> str:
+    if reason == "no_port_holder" and service.port is not None:
+        return f"{service.id}: 포트 {service.port}을 점유 중인 프로세스를 찾지 못했습니다."
+    if reason == "pid_is_self":
+        return "컨트롤 서버 자신을 종료할 수 없습니다."
+    if reason in {"pid_tracked_by_other", "already_tracked"}:
+        return "대상 PID는 컨트롤 서버가 추적 중인 다른 서비스입니다. 해당 서비스의 stop을 사용하세요."
+    return f"{service.id}: 외부 종료 안전 검증 실패 ({reason})"
 
 
 def _adopt_service_signature(service: ServiceConfig) -> tuple[Any, ...]:

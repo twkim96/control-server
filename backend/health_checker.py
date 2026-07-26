@@ -108,6 +108,26 @@ class HealthChecker:
             self._pm.inspect_state,
         )
         state, alive = inspect_state(service.id)
+        runtime_snapshot_ready = getattr(
+            self._pm,
+            "runtime_snapshot_ready",
+            lambda: True,
+        )
+        if not alive and not runtime_snapshot_ready():
+            return HealthResult(
+                state="unknown",
+                alive=False,
+                unmanaged=False,
+                unmanaged_pid=None,
+                pid=None,
+                pgid=None,
+                uptime_seconds=None,
+                health=_health_skipped("pm2_snapshot_pending"),
+                port_check=None,
+                last_exit_code=state.last_exit_code,
+                last_exit_time=state.last_exit_time,
+                adoption_evaluation=None,
+            )
 
         # 추적 중인 PID가 없는데 외부에 health URL이 응답하고 있고, 정책이 manage라면
         # 입양을 시도한다 (v1.2.5). status_only/manage 둘 다 health URL은 한 번 묻는다.
@@ -271,6 +291,14 @@ class HealthChecker:
         이 경로는 순수 네트워크 프로브(_probe_health)만 병렬화한다. ProcessManager 락이나
         Flask current_app을 건드리지 않아 워커 스레드에서 안전하다.
         """
+        runtime_snapshot_ready = getattr(
+            self._pm,
+            "runtime_snapshot_ready",
+            lambda: True,
+        )
+        if not runtime_snapshot_ready():
+            return {}
+
         targets: dict[tuple[str, str | None, bool, float], HealthConfig] = {}
         for service in services:
             cfg = service.health
@@ -368,8 +396,8 @@ class HealthChecker:
         return {"port": port, "open": result == 0, "errno": result if result else None}
 
 
-def _health_skipped() -> dict[str, Any]:
-    return {"enabled": False, "ok": None, "reason": "process_not_alive"}
+def _health_skipped(reason: str = "process_not_alive") -> dict[str, Any]:
+    return {"enabled": False, "ok": None, "reason": reason}
 
 
 __all__ = ["HealthChecker", "HealthResult", "STARTING_GRACE_SECONDS"]

@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -181,7 +182,7 @@ def _parse_service(node: Any, index: int) -> ServiceConfig:
     sid = _require_str(node, f"{where}.id")
     if not _is_valid_id(sid):
         raise ConfigError(
-            f"{where}.id는 영문/숫자/`_`/`-`로만 구성되어야 합니다: {sid!r}"
+            f"{where}.id는 영문/숫자로 시작하고 영문/숫자/`.`/`_`/`-`만 써야 합니다: {sid!r}"
         )
 
     name = _require_str(node, f"{where}.name")
@@ -743,6 +744,4 @@ def _require_int(node: dict[str, Any], key_path: str) -> int:
 
 
 def _is_valid_id(value: str) -> bool:
-    if not value:
-        return False
-    return all(c.isalnum() or c in {"_", "-"} for c in value)
+    return re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", value) is not None

@@ -90,6 +90,47 @@ def test_duplicate_service_id(tmp_path: Path) -> None:
         load_config(p)
 
 
+@pytest.mark.parametrize("service_id", ["한글", "_hidden", "-hidden", ".hidden"])
+def test_service_id_rejects_values_pm2_cannot_namespace(
+    tmp_path: Path,
+    service_id: str,
+) -> None:
+    p = _write(
+        tmp_path,
+        f"""
+        controller:
+          host: "0.0.0.0"
+          port: 9000
+        services:
+          - id: "{service_id}"
+            name: "x"
+            cwd: "/tmp"
+            entry_file: "x.py"
+            command: ["python", "x.py"]
+        """,
+    )
+    with pytest.raises(ConfigError, match="영문/숫자로 시작"):
+        load_config(p)
+
+
+def test_service_id_accepts_pm2_safe_dot(tmp_path: Path) -> None:
+    p = _write(
+        tmp_path,
+        """
+        controller:
+          host: "0.0.0.0"
+          port: 9000
+        services:
+          - id: "safe.service_1"
+            name: "x"
+            cwd: "/tmp"
+            entry_file: "x.py"
+            command: ["python", "x.py"]
+        """,
+    )
+    assert load_config(p).services[0].id == "safe.service_1"
+
+
 def test_duplicate_action_id(tmp_path: Path) -> None:
     p = _write(
         tmp_path,

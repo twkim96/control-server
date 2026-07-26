@@ -23,7 +23,7 @@
 
 - Backend: Python, Flask, Waitress, psutil, ruamel.yaml
 - Frontend: React, TypeScript, Vite
-- Runtime: macOS launchd (Control Server), isolated PM2 (managed services, v1.4.1)
+- Runtime: macOS launchd (Control Server), isolated PM2 (managed services, v1.4.2)
 - Configuration: YAML
 
 프로젝트의 HTTP API는 [API.md](./API.md)를 참고하세요.
@@ -205,9 +205,13 @@ Control Server는 시작 전 포트 점유를 확인하며, 등록 서비스는 
 
 PM2 운영 모드의 `process_stop` primary signal은 `SIGINT`여야 하며, 설정된 `SIGTERM`
 fallback 뒤 마지막 `SIGKILL`은 PM2가 수행합니다. 로그의 `max_bytes`/`keep` 회전은 PM2가
-stopped를 확정한 뒤 또는 stopped 서비스를 다시 시작하기 직전에 적용됩니다. 실행 중인
-서비스 정의를 config에서 제거하면 orphan 방지를 위해 reload가 409로 거부되므로 먼저
-서비스를 중지하세요.
+stopped를 확정한 뒤 또는 stopped 서비스를 다시 시작하기 직전에 적용됩니다. PM2의
+별도 out/error 파일은 `/dev/null`로 보내므로 통합 로그만 보관합니다. 실행 중인 서비스의
+command/cwd/env/종료 timeout 변경과 정의 제거는 orphan·stale crash restart 방지를 위해
+reload가 409로 거부되므로 먼저 서비스를 중지하세요. 거부된 후보 config는 private
+`backend/runtime/last_good_config.yml`에서 즉시 원복되며, 재시작 때도 private manifest와
+대조합니다. 1.4.2 첫 적용에서 기존 manifest가 이전 정의이면 Servers 탭에 재시작 필요
+서비스를 표시하고, config 밖의 stopped legacy entry만 background에서 안전하게 정리합니다.
 
 ### 외부 프로세스와 PM2 소유권
 
@@ -225,7 +229,6 @@ health 검증을 통과한 외부 프로세스만 `pm2_exclusive`가 되고, 불
 항상 저장소 wrapper를 사용하세요. bare `pm2`는 사용자 기본 daemon을 가리킬 수 있습니다.
 
 ```bash
-scripts/pm2ctl.sh jlist
 scripts/pm2ctl.sh status
 scripts/pm2ctl.sh logs server-control--SERVICE_ID
 ```
@@ -363,8 +366,11 @@ Control Server와 터미널 명령이 겹쳐도 God daemon을 중복 생성하�
 snapshot은 10초간 재사용하며 start/stop/restart 뒤에는 즉시 강제 갱신한다.
 
 ```bash
-scripts/pm2ctl.sh jlist
+scripts/pm2ctl.sh status
 ```
+
+수동 점검에 raw `jlist`를 사용하지 마세요. PM2 application의 전체 `pm2_env`가 출력돼
+터미널 scrollback에 비밀번호나 서비스 자격증명이 남을 수 있습니다.
 
 ### SSE는 연결됐지만 로그가 없음
 

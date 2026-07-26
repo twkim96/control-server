@@ -122,6 +122,9 @@ def test_real_pm2_lifecycle_isolated(tmp_path: Path) -> None:
         ):
             time.sleep(0.05)
         assert "ready" in log_path.read_text(encoding="utf-8")
+        pm2_log_dir = pm2_home / "logs"
+        assert not list(pm2_log_dir.glob("*-out.log"))
+        assert not list(pm2_log_dir.glob("*-error.log"))
 
         os.kill(first.pid, signal.SIGKILL)
         deadline = time.monotonic() + 12

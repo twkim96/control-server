@@ -82,6 +82,8 @@ def test_manifest_preserves_command_args_env_and_private_mode(tmp_path: Path) ->
     # SIGINT and one for the configured graceful SIGTERM fallback.
     assert app["kill_timeout"] == 15000
     assert app["log_file"] == str(tmp_path / "logs" / "example.log")
+    assert app["out_file"] == "/dev/null"
+    assert app["error_file"] == "/dev/null"
     assert os.stat(path).st_mode & 0o777 == 0o600
     assert os.stat(path.parent).st_mode & 0o777 == 0o700
 
@@ -111,6 +113,77 @@ def test_manifest_rejects_primary_signal_pm2_cannot_honor(tmp_path: Path) -> Non
 
     with pytest.raises(Pm2Error, match="SIGINT만 지원"):
         manager.build_manifest(replace(service, actions=(stop,)))
+
+
+def test_manifest_definition_issues_detect_runtime_change_and_orphan(tmp_path: Path) -> None:
+    manager = _manager(tmp_path, lambda *_: CommandResult(0, "[]", ""))
+    service = _service(tmp_path)
+    manager.write_manifest(service)
+
+    assert manager.manifest_definition_issues((replace(service, name="static rename"),)) == set()
+    assert manager.manifest_definition_issues((replace(service, env={"EXAMPLE": "new"}),)) == {
+        service.id
+    }
+    assert manager.manifest_definition_issues(()) == {service.id}
+
+
+def test_startup_manifest_issues_surface_and_stopped_orphan_is_cleaned(
+    tmp_path: Path,
+) -> None:
+    configured = _service(tmp_path)
+    orphan = _service(tmp_path, sid="legacy_orphan")
+    commands: list[str] = []
+    payload = [
+        {
+            "name": "server-control--legacy_orphan",
+            "pid": 0,
+            "pm2_env": {"status": "stopped"},
+        }
+    ]
+
+    def runner(argv, _env, _timeout):
+        commands.append(argv[1])
+        if argv[1] == "jlist":
+            return CommandResult(0, json.dumps(payload, separators=(",", ":")), "")
+        return CommandResult(0, "ok", "")
+
+    manager = _manager(tmp_path, runner)
+    orphan_manifest = manager.write_manifest(orphan)
+    manager.record_startup_manifest_issues(
+        (configured,),
+        {configured.id, orphan.id},
+    )
+    diagnostics = manager.snapshot_diagnostics()
+    assert diagnostics["degraded"] is True
+    assert diagnostics["restart_required_service_ids"] == [configured.id]
+    assert diagnostics["orphan_service_ids"] == [orphan.id]
+
+    manager.reconcile_startup_orphans()
+
+    assert "delete" in commands
+    assert not orphan_manifest.exists()
+    assert manager.snapshot_diagnostics()["orphan_service_ids"] == []
+
+
+def test_startup_snapshot_discovers_online_orphan_without_manifest(tmp_path: Path) -> None:
+    payload = [
+        {
+            "name": "server-control--hidden_online",
+            "pid": 88,
+            "pm2_env": {"status": "online"},
+        }
+    ]
+    manager = _manager(
+        tmp_path,
+        lambda *_: CommandResult(0, json.dumps(payload, separators=(",", ":")), ""),
+    )
+    manager.activate_service(_service(tmp_path))
+
+    manager.reconcile_startup_orphans()
+
+    diagnostics = manager.snapshot_diagnostics()
+    assert diagnostics["orphan_service_ids"] == ["hidden_online"]
+    assert diagnostics["degraded"] is True
 
 
 def test_snapshot_ignores_banner_foreign_apps_and_env(tmp_path: Path) -> None:
@@ -401,6 +474,31 @@ def test_external_kill_requires_confirmed_absence_from_pm2(tmp_path: Path) -> No
     external_helper.kill_external.assert_not_called()
 
 
+def test_external_kill_rejects_cmdline_mismatch_before_delegation(tmp_path: Path) -> None:
+    external_helper = Mock()
+    external_helper.evaluate_external_identity.return_value = AdoptEvaluation(
+        diagnostics=AdoptDiagnostics(
+            ok=False,
+            reason="cmdline_mismatch",
+            candidate_pid=88,
+        ),
+        candidate=None,
+        state_snapshot=RuntimeState(),
+    )
+    manager = Pm2Manager(
+        tmp_path / "runtime",
+        tmp_path / "logs",
+        wrapper=tmp_path / "pm2ctl.sh",
+        runner=lambda *_: CommandResult(0, "[]", ""),
+        external_helper=external_helper,
+    )
+
+    with pytest.raises(Pm2Error, match="cmdline_mismatch"):
+        manager.kill_external(_service(tmp_path), expected_pid=88)
+
+    external_helper.kill_external.assert_not_called()
+
+
 def test_reconcile_rejects_removing_online_pm2_service(tmp_path: Path) -> None:
     service = _service(tmp_path, sid="removed")
     payload = [
@@ -463,6 +561,86 @@ def test_reconcile_blocks_stale_definition_after_reload(tmp_path: Path) -> None:
 
     with pytest.raises(Pm2Error, match="최신 설정"):
         manager.start(old)
+
+
+def test_reconcile_rejects_runtime_definition_change_while_online(tmp_path: Path) -> None:
+    old = _service(tmp_path, sid="reloadable")
+    new = replace(old, env={"EXAMPLE": "changed"})
+    commands: list[str] = []
+    payload = [
+        {
+            "name": "server-control--reloadable",
+            "pid": 88,
+            "pm2_env": {"status": "online"},
+        }
+    ]
+
+    def runner(argv, _env, _timeout):
+        commands.append(argv[1])
+        return CommandResult(0, json.dumps(payload, separators=(",", ":")), "")
+
+    manager = _manager(tmp_path, runner)
+    manager.activate_service(old)
+
+    with pytest.raises(Pm2Error, match="먼저 중지"):
+        manager.reconcile_service_definitions((new,))
+
+    assert manager._active_services[old.id] == old
+    assert "delete" not in commands
+
+
+def test_reconcile_replaces_stopped_runtime_definition(tmp_path: Path) -> None:
+    old = _service(tmp_path, sid="reloadable")
+    new = replace(old, env={"EXAMPLE": "changed"})
+    commands: list[str] = []
+    payload = [
+        {
+            "name": "server-control--reloadable",
+            "pid": 0,
+            "pm2_env": {"status": "stopped"},
+        }
+    ]
+
+    def runner(argv, _env, _timeout):
+        commands.append(argv[1])
+        if argv[1] == "jlist":
+            return CommandResult(0, json.dumps(payload, separators=(",", ":")), "")
+        return CommandResult(0, "ok", "")
+
+    manager = _manager(tmp_path, runner)
+    manager.activate_service(old)
+    manifest = manager.write_manifest(old)
+
+    manager.reconcile_service_definitions((new,))
+
+    assert manager._active_services[old.id] == new
+    assert "delete" in commands
+    assert not manifest.exists()
+
+
+def test_stale_restart_is_rejected_before_stop(tmp_path: Path) -> None:
+    old = _service(tmp_path, sid="reloadable")
+    new = replace(old, name="new definition")
+    commands: list[str] = []
+
+    def runner(argv, _env, _timeout):
+        commands.append(argv[1])
+        payload = [
+            {
+                "name": "server-control--reloadable",
+                "pid": 88,
+                "pm2_env": {"status": "online"},
+            }
+        ]
+        return CommandResult(0, json.dumps(payload, separators=(",", ":")), "")
+
+    manager = _manager(tmp_path, runner)
+    manager.activate_service(new)
+
+    with pytest.raises(Pm2Error, match="최신 설정"):
+        manager.restart(old, old.actions[0].stop_strategy)
+
+    assert commands == []
 
 
 def test_reconcile_removal_serializes_with_concurrent_start(tmp_path: Path) -> None:
@@ -540,6 +718,32 @@ def test_stop_rotates_log_with_service_policy(tmp_path: Path) -> None:
 
     assert not log_path.exists()
     assert (tmp_path / "logs" / "example.log.1").stat().st_size == 2048
+
+
+def test_stop_reconciles_stopped_state_after_cli_failure(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    online = True
+
+    def runner(argv, _env, _timeout):
+        nonlocal online
+        if argv[1] == "stop":
+            online = False
+            return CommandResult(1, "", "reply lost after accepted stop")
+        payload = [
+            {
+                "name": "server-control--example",
+                "pid": 88 if online else 0,
+                "pm2_env": {"status": "online" if online else "stopped"},
+            }
+        ]
+        return CommandResult(0, json.dumps(payload, separators=(",", ":")), "")
+
+    manager = _manager(tmp_path, runner)
+    manager.activate_service(service)
+
+    stopped = manager.stop(service, service.actions[0].stop_strategy)
+
+    assert stopped.pid is None
 
 
 def test_stop_schedules_graceful_fallback_before_pm2_kill_deadline(tmp_path: Path) -> None:

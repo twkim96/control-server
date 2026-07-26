@@ -110,7 +110,8 @@ export function ServersSection({ showToolbar = true }: ServersSectionProps) {
         </div>
       )}
 
-      {services.data?.supervisor?.degraded && (
+      {services.data?.supervisor?.degraded &&
+        (services.data.supervisor.refreshing || services.data.supervisor.last_error) && (
         <div
           role="status"
           style={{
@@ -124,6 +125,20 @@ export function ServersSection({ showToolbar = true }: ServersSectionProps) {
             ? ` (${Math.round(services.data.supervisor.snapshot_age_seconds)}초 전)`
             : ""}
           . 시작·중지·재시작은 PM2의 확정 응답이 있을 때만 실행됩니다.
+        </div>
+      )}
+
+      {!!services.data?.supervisor?.restart_required_service_ids?.length && (
+        <div role="status" style={{ color: "var(--status-starting)", fontSize: 14 }}>
+          PM2 정의 갱신을 위해 다음 명시적 재시작이 필요합니다: {" "}
+          {services.data.supervisor.restart_required_service_ids.join(", ")}
+        </div>
+      )}
+
+      {!!services.data?.supervisor?.orphan_service_ids?.length && (
+        <div role="alert" style={{ color: "var(--danger)", fontSize: 14 }}>
+          config 밖에서 실행 중인 PM2 항목이 있습니다. status 확인 후 정상 중지·삭제하세요:{" "}
+          {services.data.supervisor.orphan_service_ids.join(", ")}
         </div>
       )}
 

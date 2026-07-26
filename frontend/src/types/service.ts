@@ -180,6 +180,8 @@ export interface SupervisorDiagnostics {
   refreshing: boolean;
   snapshot_age_seconds: number | null;
   last_error: string | null;
+  restart_required_service_ids: string[];
+  orphan_service_ids: string[];
 }
 
 export interface ServicesResponse {

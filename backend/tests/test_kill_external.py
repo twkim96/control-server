@@ -6,6 +6,7 @@ import socket
 import subprocess
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import psutil
@@ -106,7 +107,11 @@ def test_kill_external_with_sigint(pm):
     port = _free_port()
     listener = _spawn_external_listener(port)
     try:
-        service = _make_service(port=port)
+        service = replace(
+            _make_service(port=port),
+            cwd=psutil.Process(listener.pid).cwd(),
+            command=tuple(psutil.Process(listener.pid).cmdline()),
+        )
         result = pm.kill_external(service)
         assert result["pid"] == listener.pid
         # SIGINT만으로 깨끗히 죽었어야 함
@@ -191,6 +196,12 @@ def test_kill_external_rejects_holder_change_before_first_signal(pm, monkeypatch
         def create_time(self):
             return 10.0
 
+        def cmdline(self):
+            return ["python", "x.py"]
+
+        def cwd(self):
+            return "/tmp"
+
         def is_running(self):
             return True
 
@@ -206,8 +217,9 @@ def test_kill_external_rejects_holder_change_before_first_signal(pm, monkeypatch
     sent: list[tuple[int, int]] = []
     monkeypatch.setattr(pm_module, "_find_port_holder", lambda _port: next(holders))
     monkeypatch.setattr(pm_module.psutil, "Process", FakeProcess)
+    monkeypatch.setattr(pm_module.os, "getpgid", lambda _pid: 12345)
     monkeypatch.setattr(pm_module.os, "kill", lambda pid, sig: sent.append((pid, sig)))
 
-    with pytest.raises(ProcessError, match="signal 전 변경"):
+    with pytest.raises(ProcessError, match="health 확인 뒤 변경"):
         pm.kill_external(_make_service(port=12345))
     assert sent == []

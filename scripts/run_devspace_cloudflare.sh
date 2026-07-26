@@ -13,6 +13,8 @@ CLOUDFLARED_LOG="$RUNTIME_DIR/cloudflared.log"
 
 cloudflared_pid=""
 devspace_pid=""
+DEVSPACE_BIND_HOST=""
+DEVSPACE_BIND_PORT=""
 
 require_executable() {
   local path="$1"
@@ -20,6 +22,20 @@ require_executable() {
   if [[ ! -x "$path" ]]; then
     echo "[!] $label executable not found: $path" >&2
     exit 1
+  fi
+}
+
+resolve_local_bind() {
+  local url="${DEVSPACE_LOCAL_URL%/}"
+  if [[ ! "$url" =~ ^http://([^/:]+):([0-9]{1,5})$ ]]; then
+    echo "[!] DEVSPACE_LOCAL_URL must look like http://HOST:PORT" >&2
+    exit 2
+  fi
+  DEVSPACE_BIND_HOST="${BASH_REMATCH[1]}"
+  DEVSPACE_BIND_PORT="${BASH_REMATCH[2]}"
+  if (( DEVSPACE_BIND_PORT < 1 || DEVSPACE_BIND_PORT > 65535 )); then
+    echo "[!] DEVSPACE_LOCAL_URL port must be between 1 and 65535." >&2
+    exit 2
   fi
 }
 
@@ -57,6 +73,7 @@ trap 'shutdown 143' TERM HUP
 
 require_executable "$CLOUDFLARED_BIN" "cloudflared"
 require_executable "$DEVSPACE_BIN" "devspace"
+resolve_local_bind
 
 if ! [[ "$STARTUP_TIMEOUT" =~ ^[0-9]+$ ]] || [[ "$STARTUP_TIMEOUT" -lt 1 ]]; then
   echo "[!] DEVSPACE_TUNNEL_STARTUP_TIMEOUT must be a positive integer." >&2
@@ -98,6 +115,8 @@ echo "[!] Quick Tunnel URLs change whenever this managed service is recreated."
 
 DEVSPACE_PUBLIC_BASE_URL="$public_url" \
 DEVSPACE_TRUST_PROXY="$DEVSPACE_TRUST_PROXY" \
+HOST="$DEVSPACE_BIND_HOST" \
+PORT="$DEVSPACE_BIND_PORT" \
   "$DEVSPACE_BIN" serve &
 devspace_pid=$!
 

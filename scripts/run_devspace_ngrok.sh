@@ -10,13 +10,15 @@ NGROK_BIN="${NGROK_BIN:-/opt/homebrew/bin/ngrok}"
 DEVSPACE_BIN="${DEVSPACE_BIN:-/opt/homebrew/bin/devspace}"
 DEVSPACE_LOCAL_URL="${DEVSPACE_LOCAL_URL:-http://127.0.0.1:7676}"
 DEVSPACE_HEALTH_URL="${DEVSPACE_HEALTH_URL:-${DEVSPACE_LOCAL_URL%/}/.well-known/oauth-authorization-server}"
-DEVSPACE_PUBLIC_BASE_URL="${DEVSPACE_PUBLIC_BASE_URL:-https://scurvy-paddling-causing.ngrok-free.dev}"
+DEVSPACE_PUBLIC_BASE_URL="${DEVSPACE_PUBLIC_BASE_URL:-}"
 DEVSPACE_TRUST_PROXY="${DEVSPACE_TRUST_PROXY:-1}"
 STARTUP_TIMEOUT="${DEVSPACE_TUNNEL_STARTUP_TIMEOUT:-30}"
 NGROK_API_URL="${NGROK_API_URL:-http://127.0.0.1:4040/api/tunnels}"
 
 ngrok_pid=""
 devspace_pid=""
+DEVSPACE_BIND_HOST=""
+DEVSPACE_BIND_PORT=""
 
 require_executable() {
   local path="$1"
@@ -24,6 +26,20 @@ require_executable() {
   if [[ ! -x "$path" ]]; then
     echo "[!] $label executable not found: $path" >&2
     exit 1
+  fi
+}
+
+resolve_local_bind() {
+  local url="${DEVSPACE_LOCAL_URL%/}"
+  if [[ ! "$url" =~ ^http://([^/:]+):([0-9]{1,5})$ ]]; then
+    echo "[!] DEVSPACE_LOCAL_URL must look like http://HOST:PORT" >&2
+    exit 2
+  fi
+  DEVSPACE_BIND_HOST="${BASH_REMATCH[1]}"
+  DEVSPACE_BIND_PORT="${BASH_REMATCH[2]}"
+  if (( DEVSPACE_BIND_PORT < 1 || DEVSPACE_BIND_PORT > 65535 )); then
+    echo "[!] DEVSPACE_LOCAL_URL port must be between 1 and 65535." >&2
+    exit 2
   fi
 }
 
@@ -63,9 +79,15 @@ trap 'shutdown 143' TERM HUP
 require_executable "$NGROK_BIN" "ngrok"
 require_executable "$DEVSPACE_BIN" "devspace"
 require_executable "/usr/bin/curl" "curl"
+resolve_local_bind
 
 if ! [[ "$STARTUP_TIMEOUT" =~ ^[0-9]+$ ]] || [[ "$STARTUP_TIMEOUT" -lt 1 ]]; then
   echo "[!] DEVSPACE_TUNNEL_STARTUP_TIMEOUT must be a positive integer." >&2
+  exit 2
+fi
+
+if [[ -z "$DEVSPACE_PUBLIC_BASE_URL" ]]; then
+  echo "[!] DEVSPACE_PUBLIC_BASE_URL is required for the account-assigned ngrok endpoint." >&2
   exit 2
 fi
 
@@ -82,6 +104,8 @@ DEVSPACE_PUBLIC_BASE_URL="${DEVSPACE_PUBLIC_BASE_URL%/}"
 echo "[+] Starting DevSpace on $DEVSPACE_LOCAL_URL"
 DEVSPACE_PUBLIC_BASE_URL="$DEVSPACE_PUBLIC_BASE_URL" \
 DEVSPACE_TRUST_PROXY="$DEVSPACE_TRUST_PROXY" \
+HOST="$DEVSPACE_BIND_HOST" \
+PORT="$DEVSPACE_BIND_PORT" \
   "$DEVSPACE_BIN" serve &
 devspace_pid=$!
 

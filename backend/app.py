@@ -15,6 +15,7 @@ import logging
 import os
 import sys
 import threading
+import time
 from pathlib import Path
 
 import psutil
@@ -22,6 +23,7 @@ from flask import Flask, jsonify
 
 from action_runner import ActionRunner
 from auth import PASSWORD_ENV, init_app as init_auth, is_password_configured
+from config_checkpoint import ConfigCheckpoint, ConfigCheckpointError
 from config_loader import ConfigError, load_config
 from file_browser import FileBrowser
 from health_checker import HealthChecker
@@ -58,12 +60,23 @@ def create_app(
     process_backend: str = "native",
     pm2_runner=None,
 ) -> Flask:
-    config = load_config(config_path)
+    config_path = Path(config_path)
+    checkpoint = ConfigCheckpoint(runtime_dir)
+    checkpoint_existed = checkpoint.exists()
+    try:
+        config = load_config(config_path)
+    except ConfigError:
+        if not checkpoint.exists():
+            raise
+        checkpoint.restore_to(config_path)
+        config = load_config(config_path)
+        logging.getLogger("server_control.config").warning(
+            "invalid startup config restored from private last-good checkpoint"
+        )
 
     app = Flask(__name__)
     init_auth(app, secret_key_path=Path(runtime_dir) / ".secret_key")
 
-    registry = ServiceRegistry(config)
     log_manager = LogManager(log_dir)
     run_log_manager = RunLogManager(Path(log_dir) / "actions")
     if process_backend == "pm2":
@@ -75,10 +88,34 @@ def create_app(
             external_helper=external_helper,
             log_manager=log_manager,
         )
+        issues = process_manager.manifest_definition_issues(config.services)
+        if checkpoint_existed:
+            checkpoint_config = checkpoint.load()
+            if checkpoint_config.raw != config.raw:
+                checkpoint.restore_to(config_path)
+                config = checkpoint_config
+                issues = process_manager.manifest_definition_issues(config.services)
+                logging.getLogger("server_control.config").warning(
+                    "startup config differed from last-good checkpoint and was restored"
+                )
+        if issues:
+            # First v1.4.2 boot naturally sees legacy manifests. Keep the
+            # current/checkpoint-approved YAML, surface configured entries as
+            # restart-required, and clean only stopped orphans in background.
+            process_manager.record_startup_manifest_issues(config.services, issues)
+            logging.getLogger("server_control.config").warning(
+                "PM2 manifest reconciliation required: %s",
+                ", ".join(sorted(issues)),
+            )
     elif process_backend == "native":
         process_manager = ProcessManager(runtime_dir, log_manager)
     else:
         raise ConfigError(f"unsupported process backend: {process_backend}")
+    try:
+        checkpoint.save_from(config_path)
+    except ConfigCheckpointError as exc:
+        raise ConfigError(str(exc)) from exc
+    registry = ServiceRegistry(config)
     for service in config.services:
         process_manager.activate_service(service)
     health_checker = HealthChecker(process_manager, health_ttl_seconds=2.0)
@@ -92,6 +129,7 @@ def create_app(
     )
 
     app.config["config_path"] = str(config_path)
+    app.config["config_checkpoint"] = checkpoint
     app.config["registry"] = registry
     app.config["log_manager"] = log_manager
     app.config["run_log_manager"] = run_log_manager
@@ -152,6 +190,12 @@ def _run_startup_lifecycle(
 
     log = logging.getLogger("server_control.startup")
     try:
+        reconcile_orphans = getattr(process_manager, "reconcile_startup_orphans", None)
+        if callable(reconcile_orphans):
+            try:
+                reconcile_orphans()
+            except Exception as exc:  # noqa: BLE001
+                log.warning("background PM2 orphan reconciliation failed: %s", exc)
         if getattr(process_manager, "supports_adoption", True):
             _run_adopt_pass(registry, process_manager)
         _run_autostart(registry, process_manager)
@@ -186,14 +230,27 @@ def _run_autostart(registry: ServiceRegistry, process_manager: ProcessManager) -
             "is_alive_confirmed",
             process_manager.is_alive,
         )
-        if confirmed_is_alive(service.id):
-            log.info("autostart skip (already alive): %s", service.id)
-            continue
-        try:
-            state = process_manager.start(service)
-            log.info("autostart ok: %s pid=%s", service.id, state.pid)
-        except Exception as exc:  # noqa: BLE001
-            log.warning("autostart failed: %s -> %s", service.id, exc)
+        for attempt in range(3):
+            try:
+                if confirmed_is_alive(service.id):
+                    log.info("autostart skip (already alive): %s", service.id)
+                    break
+                state = process_manager.start(service)
+                log.info("autostart ok: %s pid=%s", service.id, state.pid)
+                break
+            except Exception as exc:  # noqa: BLE001
+                if attempt == 2:
+                    log.warning("autostart failed after retries: %s -> %s", service.id, exc)
+                    break
+                delay = 0.25 * (2**attempt)
+                log.warning(
+                    "autostart retry: %s attempt=%s delay=%.2fs -> %s",
+                    service.id,
+                    attempt + 1,
+                    delay,
+                    exc,
+                )
+                time.sleep(delay)
 
 
 def _setup_logging(level: str) -> None:

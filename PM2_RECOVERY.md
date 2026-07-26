@@ -45,7 +45,7 @@ Use only the dedicated Control Server `PM2_HOME`. Never run `pm2 delete all` or
 Use the repository wrapper so every command targets the dedicated PM2 instance:
 
 ```bash
-scripts/pm2ctl.sh jlist
+scripts/pm2ctl.sh status
 scripts/pm2ctl.sh stop server-control--SERVICE_ID
 scripts/pm2ctl.sh delete server-control--SERVICE_ID
 scripts/pm2ctl.sh kill
@@ -55,6 +55,9 @@ Run stop/delete once per namespaced service and verify its port after each stop.
 The final `kill` is allowed only after every dedicated application is stopped and
 deleted. The wrapper forces the private `PM2_HOME`; do not replace it with a bare
 global `pm2` command during recovery.
+
+Do not use raw `jlist` for manual inspection: it includes each application's
+full `pm2_env` and can leave credentials in terminal scrollback.
 
 ## Restore source code
 

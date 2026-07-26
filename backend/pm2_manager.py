@@ -109,6 +109,8 @@ class Pm2Manager:
         self._op_locks: dict[str, threading.RLock] = {}
         self._active_services: dict[str, ServiceConfig] = {}
         self._retired_services: set[str] = set()
+        self._restart_required_service_ids: set[str] = set()
+        self._orphan_service_ids: set[str] = set()
         self.supports_adoption = False
 
     @staticmethod
@@ -139,6 +141,65 @@ class Pm2Manager:
             self._retired_services.discard(service.id)
             self._active_services[service.id] = service
 
+    def manifest_definition_issues(
+        self,
+        services: tuple[ServiceConfig, ...],
+    ) -> set[str]:
+        """Return config IDs missing/mismatching private PM2 manifest definitions."""
+
+        configured = {service.id: service for service in services}
+        issues: set[str] = set()
+        if self._manifest_root.is_dir():
+            for path in self._manifest_root.glob("*.json"):
+                service_id = path.stem
+                if _SAFE_ID.fullmatch(service_id) and service_id not in configured:
+                    issues.add(service_id)
+        for service_id, service in configured.items():
+            path = self._manifest_root / f"{service_id}.json"
+            if not path.is_file():
+                continue
+            try:
+                saved = json.loads(path.read_text(encoding="utf-8"))
+                expected = self.build_manifest(service)
+            except (OSError, ValueError, Pm2Error):
+                issues.add(service_id)
+                continue
+            if _manifest_runtime_signature(saved) != _manifest_runtime_signature(expected):
+                issues.add(service_id)
+        return issues
+
+    def record_startup_manifest_issues(
+        self,
+        services: tuple[ServiceConfig, ...],
+        issues: set[str],
+    ) -> None:
+        configured = {service.id for service in services}
+        with self._condition:
+            self._restart_required_service_ids = set(issues) & configured
+            self._orphan_service_ids = set(issues) - configured
+
+    def reconcile_startup_orphans(self) -> None:
+        """Delete stopped legacy orphans; retain online ones in diagnostics."""
+
+        snapshot = self.snapshot(force=True)
+        discovered = set(snapshot) - set(self._active_services)
+        with self._condition:
+            self._orphan_service_ids.update(discovered)
+            orphan_ids = set(self._orphan_service_ids)
+        if not orphan_ids:
+            return
+        for service_id in sorted(orphan_ids):
+            with self._op_lock(service_id):
+                process = snapshot.get(service_id)
+                if process is not None and process.alive:
+                    continue
+                if process is not None:
+                    self._command(["delete", self.app_name(service_id)])
+                (self._manifest_root / f"{service_id}.json").unlink(missing_ok=True)
+                with self._condition:
+                    self._orphan_service_ids.discard(service_id)
+        self.invalidate()
+
     def reconcile_service_definitions(self, services: tuple[ServiceConfig, ...]) -> None:
         incoming = {service.id: service for service in services}
         for service_id in incoming:
@@ -153,7 +214,13 @@ class Pm2Manager:
                 stack.enter_context(self.service_operation(service_id))
 
             removed = set(self._active_services) - set(incoming)
-            snapshot = self.snapshot(force=True) if removed else {}
+            runtime_changed = {
+                service_id
+                for service_id in set(self._active_services) & set(incoming)
+                if self._runtime_definition_signature(self._active_services[service_id])
+                != self._runtime_definition_signature(incoming[service_id])
+            }
+            snapshot = self.snapshot(force=True) if removed or runtime_changed else {}
             running = [
                 service_id
                 for service_id in sorted(removed)
@@ -163,6 +230,17 @@ class Pm2Manager:
                 joined = ", ".join(running)
                 raise Pm2Error(
                     f"실행 중인 PM2 서비스라 config reload에서 제거할 수 없습니다: {joined}"
+                )
+            changed_running = [
+                service_id
+                for service_id in sorted(runtime_changed)
+                if (process := snapshot.get(service_id)) is not None and process.alive
+            ]
+            if changed_running:
+                joined = ", ".join(changed_running)
+                raise Pm2Error(
+                    "실행 중인 PM2 서비스의 command/cwd/env/종료 설정은 변경할 수 없습니다. "
+                    f"먼저 중지하세요: {joined}"
                 )
 
             # Preflight passed for every removal. Clean stopped PM2 entries and
@@ -175,13 +253,27 @@ class Pm2Manager:
                     self._command(["delete", self.app_name(service_id)])
                 (self._manifest_root / f"{service_id}.json").unlink(missing_ok=True)
 
+            # A stopped PM2 entry still retains its old command/env. Delete it
+            # so the next explicit start is created only from the new YAML.
+            for service_id in sorted(runtime_changed):
+                old = self._active_services[service_id]
+                self._rotate_service_log(old)
+                if snapshot.get(service_id) is not None:
+                    self._command(["delete", self.app_name(service_id)])
+                (self._manifest_root / f"{service_id}.json").unlink(missing_ok=True)
+
             for service_id in removed:
                 self._active_services.pop(service_id, None)
                 self._retired_services.add(service_id)
+                with self._condition:
+                    self._restart_required_service_ids.discard(service_id)
+                    self._orphan_service_ids.discard(service_id)
             for service_id, service in incoming.items():
                 self._retired_services.discard(service_id)
                 self._active_services[service_id] = service
-            if removed:
+            with self._condition:
+                self._restart_required_service_ids.difference_update(runtime_changed)
+            if removed or runtime_changed:
                 self.invalidate()
 
     def build_manifest(self, service: ServiceConfig) -> dict[str, object]:
@@ -228,10 +320,17 @@ class Pm2Manager:
             "exp_backoff_restart_delay": 100,
             "kill_timeout": max(100, int(kill_timeout * 1000)),
             "log_file": str(self._log_root / f"{service.id}.log"),
+            # PM2 otherwise creates duplicate per-stream files under
+            # PM2_HOME/logs in addition to log_file, bypassing log.max_bytes.
+            "out_file": "/dev/null",
+            "error_file": "/dev/null",
             "merge_logs": True,
             "time": False,
         }
         return {"apps": [app]}
+
+    def _runtime_definition_signature(self, service: ServiceConfig) -> tuple[object, ...]:
+        return _manifest_runtime_signature(self.build_manifest(service))
 
     def write_manifest(self, service: ServiceConfig) -> Path:
         manifest = self.build_manifest(service)
@@ -307,6 +406,8 @@ class Pm2Manager:
             degraded = bool(
                 self._snapshot_last_error is not None
                 or (refresh_seconds is not None and refresh_seconds >= self._slow_refresh)
+                or self._restart_required_service_ids
+                or self._orphan_service_ids
             )
             return {
                 "backend": "pm2",
@@ -314,7 +415,15 @@ class Pm2Manager:
                 "refreshing": self._snapshot_loading,
                 "snapshot_age_seconds": round(age, 3) if age is not None else None,
                 "last_error": self._snapshot_last_error,
+                "restart_required_service_ids": sorted(self._restart_required_service_ids),
+                "orphan_service_ids": sorted(self._orphan_service_ids),
             }
+
+    def runtime_snapshot_ready(self) -> bool:
+        """Whether at least one authoritative PM2 process list was received."""
+
+        with self._condition:
+            return self._snapshot_at > 0.0
 
     def _start_background_refresh_locked(self, now: float) -> None:
         if self._closed or self._snapshot_loading:
@@ -423,15 +532,18 @@ class Pm2Manager:
         process = self.get_process(service_id, force=True)
         return process is not None and process.alive
 
+    def _assert_service_current(self, service: ServiceConfig) -> None:
+        if service.id in self._retired_services:
+            raise Pm2Error(f"{service.id}는 삭제된 서비스입니다. 새 설정을 다시 불러오세요.")
+        active = self._active_services.get(service.id)
+        if active is not None and active != service:
+            raise Pm2Error(
+                f"{service.id}의 설정이 변경되었습니다. 최신 설정으로 다시 시도하세요."
+            )
+
     def start(self, service: ServiceConfig) -> Pm2Process:
         with self._op_lock(service.id):
-            if service.id in self._retired_services:
-                raise Pm2Error(f"{service.id}는 삭제된 서비스입니다. 새 설정을 다시 불러오세요.")
-            active = self._active_services.get(service.id)
-            if active is not None and active != service:
-                raise Pm2Error(
-                    f"{service.id}의 설정이 변경되었습니다. 최신 설정으로 다시 시도하세요."
-                )
+            self._assert_service_current(service)
             current = self.get_process(service.id, force=True)
             if current is not None and current.alive:
                 raise Pm2Error(f"{service.id} is already running (pid={current.pid})")
@@ -458,6 +570,8 @@ class Pm2Manager:
                 try:
                     state = self.get_process(service.id, force=True)
                     if state is not None and state.alive:
+                        with self._condition:
+                            self._restart_required_service_ids.discard(service.id)
                         return state
                     state_error = None
                 except Pm2Error as exc:
@@ -520,18 +634,40 @@ class Pm2Manager:
                     daemon=True,
                 )
                 fallback_thread.start()
+            command_error: Pm2Error | None = None
             try:
                 self._command(
                     ["stop", self.app_name(service_id)],
                     timeout_seconds=max(self._timeout, kill_timeout + 5.0),
                 )
+            except Pm2Error as exc:
+                # PM2 may have accepted stop before its CLI reply failed. As
+                # with start(), the authoritative post-state decides success.
+                command_error = exc
             finally:
                 cancel_fallbacks.set()
                 if fallback_thread is not None:
                     fallback_thread.join(timeout=0.5)
             self.invalidate()
-            confirmed = self.get_process(service_id, force=True)
+            confirmed: Pm2Process | None = None
+            state_error: Pm2Error | None = None
+            for attempt in range(3):
+                try:
+                    confirmed = self.get_process(service_id, force=True)
+                    state_error = None
+                    if confirmed is None or not confirmed.alive:
+                        break
+                except Pm2Error as exc:
+                    state_error = exc
+                if attempt < 2:
+                    time.sleep(0.1)
+            if state_error is not None:
+                if command_error is not None:
+                    raise command_error
+                raise Pm2Error(f"{service_id}: PM2 state check failed after stop") from state_error
             if confirmed is not None and confirmed.alive:
+                if command_error is not None:
+                    raise command_error
                 raise Pm2Error(f"{service_id}: PM2 stop did not reach stopped state")
             if selected_service is not None:
                 self._rotate_service_log(selected_service)
@@ -543,6 +679,7 @@ class Pm2Manager:
         strategy: StopStrategy | None = None,
     ) -> Pm2Process:
         with self._op_lock(service.id):
+            self._assert_service_current(service)
             current = self.get_process(service.id, force=True)
             if current is not None and current.alive:
                 self.stop(service, strategy)
@@ -564,6 +701,9 @@ class Pm2Manager:
             self.delete(service_id)
             self._active_services.pop(service_id, None)
             self._retired_services.add(service_id)
+            with self._condition:
+                self._restart_required_service_ids.discard(service_id)
+                self._orphan_service_ids.discard(service_id)
 
     def evaluate_adopt(
         self,
@@ -605,7 +745,16 @@ class Pm2Manager:
             raise Pm2Error(
                 f"{service.id} is managed by PM2 (pid={managed.pid}); external kill refused"
             )
-        return self._external_helper.kill_external(service, **kwargs)
+        evaluation = self._external_helper.evaluate_external_identity(service)
+        if not evaluation.diagnostics.ok or evaluation.candidate is None:
+            raise Pm2Error(
+                f"{service.id}: 외부 종료 안전 검증 실패 ({evaluation.diagnostics.reason})"
+            )
+        return self._external_helper.kill_external(
+            service,
+            evaluation=evaluation,
+            **kwargs,
+        )
 
     def shutdown(self) -> None:
         with self._condition:
@@ -728,6 +877,22 @@ def _extract_json_array(output: str) -> str:
 def _resolve_child_path(cwd: Path, value: str) -> Path:
     path = Path(value).expanduser()
     return path if path.is_absolute() else cwd / path
+
+
+def _manifest_runtime_signature(manifest: object) -> tuple[object, ...]:
+    if not isinstance(manifest, dict):
+        raise ValueError("manifest is not an object")
+    apps = manifest.get("apps")
+    if not isinstance(apps, list) or len(apps) != 1 or not isinstance(apps[0], dict):
+        raise ValueError("manifest must contain exactly one app")
+    app = apps[0]
+    return (
+        app.get("script"),
+        tuple(app.get("args") or ()),
+        app.get("cwd"),
+        json.dumps(app.get("env") or {}, ensure_ascii=False, sort_keys=True),
+        app.get("kill_timeout"),
+    )
 
 
 def _service_stop_strategy(service: ServiceConfig) -> StopStrategy:
