@@ -56,9 +56,9 @@ def test_get_appearance_returns_default_without_auth(tmp_path, monkeypatch):
     assert body == {
         "persisted": False,
         "settings": {
-            "backgroundColor": "#0b0d10",
-            "textColor": "#e7ebf0",
-            "accentColor": "#3b82f6",
+            "backgroundColor": "#ededed",
+            "textColor": "#000000",
+            "accentColor": "#1c6417",
         },
     }
     assert not store_path.exists()
@@ -121,5 +121,9 @@ def test_reset_appearance_removes_server_file(tmp_path, monkeypatch):
     assert res.status_code == 200
     body = res.get_json()
     assert body["persisted"] is False
-    assert body["settings"]["backgroundColor"] == "#0b0d10"
+    assert body["settings"] == {
+        "backgroundColor": "#ededed",
+        "textColor": "#000000",
+        "accentColor": "#1c6417",
+    }
     assert not store_path.exists()

@@ -32,7 +32,7 @@ python3 --version
 npx --yes @twkim96/control-server@latest install
 ```
 
-같은 빌드를 재현하려면 `@latest` 대신 고정 버전 `@1.5.1`을 사용할 수 있습니다.
+같은 빌드를 재현하려면 `@latest` 대신 고정 버전 `@1.5.2`를 사용할 수 있습니다.
 
 설치기는 `~/.control-server`에 versioned release와 private config/runtime/log를 만들고,
 Python 가상환경과 격리 PM2를 준비한 뒤 사용자 LaunchAgent를 설치합니다. 비밀번호를
@@ -67,6 +67,7 @@ npx --yes @twkim96/control-server@latest uninstall
 - stdout/stderr 로그 tail 및 SSE 실시간 스트리밍
 - 부모·자식 프로세스 CPU와 RSS 합계 표시
 - 웹 UI에서 서비스와 일회성 Action Group 등록·수정·정렬
+- 라이트 기본 테마와 설치 시 제공되는 `다크모드` 색상 프리셋
 - 외부 프로세스 안전 진단과 중복 실행 방지
 - 세션 쿠키 로그인과 CSRF 보호
 - launchd로 Control Server 자동 실행, 격리 PM2로 등록 서비스 관리
@@ -77,7 +78,7 @@ npx --yes @twkim96/control-server@latest uninstall
 - Backend: Python, Flask, Waitress, psutil, ruamel.yaml
 - Frontend: React, TypeScript, Vite
 - Runtime: macOS launchd (Control Server), isolated PM2 7.0.3 (managed services)
-- Distribution: npm CLI and versioned managed releases (v1.5.1)
+- Distribution: npm CLI and versioned managed releases (v1.5.2)
 - Configuration: YAML
 
 HTTP API는 [API.md](./API.md), AI를 통한 표준 서버 등록은

@@ -27,7 +27,7 @@ npx --yes @twkim96/control-server@latest install
 
 General installation uses the `latest` dist-tag. The `next` tag is reserved for preview
 releases before they are promoted to `latest`. Use
-`npx --yes @twkim96/control-server@1.5.1 install` when an exact reproducible version is
+`npx --yes @twkim96/control-server@1.5.2 install` when an exact reproducible version is
 preferred.
 
 Use `install --port 9100` when the default port 9000 is already occupied. Port changes
@@ -82,7 +82,7 @@ npx --yes @twkim96/control-server@latest migrate --plan \
   --source /path/to/control-server
 ```
 
-Version 1.5.1 intentionally provides a read-only migration plan. Moving a live PM2_HOME
+Version 1.5.2 intentionally provides a read-only migration plan. Moving a live PM2_HOME
 requires a separately approved cutover, service inventory, backup, downtime, health
 verification, and rollback.
 

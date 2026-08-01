@@ -1,7 +1,7 @@
 {
   "name": "server-control-pm2-runtime",
   "private": true,
-  "version": "1.5.1",
+  "version": "1.5.2",
   "description": "Pinned PM2 runtime used only by Control Server",
   "dependencies": {
     "pm2": "7.0.3"

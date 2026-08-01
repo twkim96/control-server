@@ -181,7 +181,7 @@ last-good checkpoint와 registry reload까지 수행합니다. 따라서 2xx 응
 ```json
 {
   "ok": true,
-  "version": "1.5.1",
+  "version": "1.5.2",
   "password_configured": true,
   "controller": {
     "host": "127.0.0.1",

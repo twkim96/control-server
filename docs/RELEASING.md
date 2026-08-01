@@ -35,7 +35,7 @@ npm publish --access public --tag next
 After clean-machine validation and CI approval, promote the exact version:
 
 ```bash
-npm dist-tag add @twkim96/control-server@1.5.1 latest
+npm dist-tag add @twkim96/control-server@1.5.2 latest
 ```
 
 Create the matching Git tag and GitHub Release only from the verified commit. Attach

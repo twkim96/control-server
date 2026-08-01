@@ -1,30 +1,30 @@
-/* 디자인 토큰. Tailscale Machines 어두운 톤 참고. */
+/* 기본 라이트 테마 토큰. 사용자 설정이 로드되면 appearance.ts가 덮어쓴다. */
 
 :root {
-  /* 배경 단계 (어두운 → 약간 밝은 표면) */
-  --bg-canvas: #0b0d10;
-  --bg-surface: #12161b;
-  --bg-surface-2: #181d23;
-  --bg-surface-3: #1f262e;
-  --bg-row-hover: #1c2128;
-  --bg-input: #161a20;
+  /* 배경 단계 */
+  --bg-canvas: #ededed;
+  --bg-surface: #e0e0e0;
+  --bg-surface-2: #d6d6d6;
+  --bg-surface-3: #cdcdcd;
+  --bg-row-hover: #cdcdcd;
+  --bg-input: #dbdbdb;
 
   /* 테두리 */
-  --border-subtle: #20262d;
-  --border-default: #2a313a;
-  --border-strong: #3a424c;
+  --border-subtle: #c7c7c7;
+  --border-default: #b6b6b6;
+  --border-strong: #a1a1a1;
 
   /* 텍스트 */
-  --text-primary: #e7ebf0;
-  --text-secondary: #a4adba;
-  --text-muted: #6c7682;
-  --text-inverse: #0b0d10;
+  --text-primary: #000000;
+  --text-secondary: #4e4e4e;
+  --text-muted: #828282;
+  --text-inverse: #ededed;
 
-  /* 강조색 (파란색 한 가지) */
-  --accent: #3b82f6;
-  --accent-hover: #2f6cd8;
+  /* 강조색 */
+  --accent: #1c6417;
+  --accent-hover: #175213;
   --accent-on: #ffffff;
-  --accent-soft: rgba(59, 130, 246, 0.16);
+  --accent-soft: rgba(28, 100, 23, 0.16);
 
   /* 상태 (status dot 전용, 테이블 외 사용 자제) */
   --status-running: #22c55e;

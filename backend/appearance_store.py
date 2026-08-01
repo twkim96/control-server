@@ -16,9 +16,9 @@ class AppearanceSettings(TypedDict):
 
 
 DEFAULT_APPEARANCE_SETTINGS: AppearanceSettings = {
-    "backgroundColor": "#0b0d10",
-    "textColor": "#e7ebf0",
-    "accentColor": "#3b82f6",
+    "backgroundColor": "#ededed",
+    "textColor": "#000000",
+    "accentColor": "#1c6417",
 }
 
 HEX_COLOR_RE = re.compile(r"^#[0-9a-f]{6}$", re.IGNORECASE)

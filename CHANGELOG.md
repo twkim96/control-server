@@ -3,6 +3,15 @@
 All notable changes are documented here. The project follows semantic versioning from
 the 1.5.0 public distribution release onward.
 
+## [1.5.2] - 2026-08-01
+
+### Changed
+
+- new installations and appearance reset now use the verified light palette from the
+  production Control Server
+- the former dark default is seeded once as the `다크모드` appearance preset without
+  replacing existing user presets
+
 ## [1.5.1] - 2026-08-01
 
 ### Changed

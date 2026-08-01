@@ -7,9 +7,9 @@ export interface AppearanceSettings {
 }
 
 export const DEFAULT_APPEARANCE_SETTINGS: AppearanceSettings = {
-  backgroundColor: "#0b0d10",
-  textColor: "#e7ebf0",
-  accentColor: "#3b82f6",
+  backgroundColor: "#ededed",
+  textColor: "#000000",
+  accentColor: "#1c6417",
 };
 
 const STORAGE_KEY = "server-control.appearance";
@@ -240,47 +240,76 @@ export interface AppearancePreset {
 }
 
 const PRESETS_STORAGE_KEY = "server-control.appearance.presets";
+const DARK_MODE_PRESET_SEED_KEY = "server-control.appearance.presets.dark-mode-v1";
+const DARK_MODE_PRESET: AppearancePreset = {
+  name: "다크모드",
+  settings: {
+    backgroundColor: "#0b0d10",
+    textColor: "#e7ebf0",
+    accentColor: "#3b82f6",
+  },
+};
 
 export function readAppearancePresets(): AppearancePreset[] {
   if (typeof window === "undefined") return [];
+  let out: AppearancePreset[] = [];
   try {
     const raw = window.localStorage.getItem(PRESETS_STORAGE_KEY);
-    if (!raw) return [];
-    const parsed: unknown = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    const out: AppearancePreset[] = [];
-    for (const item of parsed) {
-      if (
-        typeof item !== "object" ||
-        item === null ||
-        typeof (item as AppearancePreset).name !== "string" ||
-        !isAppearanceRecord((item as AppearancePreset).settings)
-      ) {
-        continue;
+    if (raw) {
+      const parsed: unknown = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        for (const item of parsed) {
+          if (
+            typeof item !== "object" ||
+            item === null ||
+            typeof (item as AppearancePreset).name !== "string" ||
+            !isAppearanceRecord((item as AppearancePreset).settings)
+          ) {
+            continue;
+          }
+          const preset = item as AppearancePreset;
+          if (!preset.name.trim()) continue;
+          out.push({
+            name: preset.name.trim(),
+            settings: {
+              backgroundColor: normalizeHexColor(
+                preset.settings.backgroundColor,
+                DEFAULT_APPEARANCE_SETTINGS.backgroundColor,
+              ),
+              textColor: normalizeHexColor(
+                preset.settings.textColor,
+                DEFAULT_APPEARANCE_SETTINGS.textColor,
+              ),
+              accentColor: normalizeHexColor(
+                preset.settings.accentColor,
+                DEFAULT_APPEARANCE_SETTINGS.accentColor,
+              ),
+            },
+          });
+        }
       }
-      const preset = item as AppearancePreset;
-      if (!preset.name.trim()) continue;
-      out.push({
-        name: preset.name.trim(),
-        settings: {
-          backgroundColor: normalizeHexColor(
-            preset.settings.backgroundColor,
-            DEFAULT_APPEARANCE_SETTINGS.backgroundColor,
-          ),
-          textColor: normalizeHexColor(
-            preset.settings.textColor,
-            DEFAULT_APPEARANCE_SETTINGS.textColor,
-          ),
-          accentColor: normalizeHexColor(
-            preset.settings.accentColor,
-            DEFAULT_APPEARANCE_SETTINGS.accentColor,
-          ),
-        },
-      });
     }
-    return out;
   } catch {
-    return [];
+    out = [];
+  }
+  return seedDarkModePreset(out);
+}
+
+function seedDarkModePreset(presets: AppearancePreset[]): AppearancePreset[] {
+  try {
+    if (window.localStorage.getItem(DARK_MODE_PRESET_SEED_KEY) === "1") {
+      return presets;
+    }
+    const next = presets.some((preset) => preset.name === DARK_MODE_PRESET.name)
+      ? presets
+      : [...presets, DARK_MODE_PRESET];
+    writeAppearancePresets(next);
+    window.localStorage.setItem(DARK_MODE_PRESET_SEED_KEY, "1");
+    return next;
+  } catch {
+    return presets.some((preset) => preset.name === DARK_MODE_PRESET.name)
+      ? presets
+      : [...presets, DARK_MODE_PRESET];
   }
 }
 
