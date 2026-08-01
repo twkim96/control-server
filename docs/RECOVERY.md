@@ -6,8 +6,8 @@ source-checkout PM2 migration rollback remains in [PM2_RECOVERY.md](../PM2_RECOV
 ## Safe first checks
 
 ```bash
-npx --yes @twkim96/control-server@latest doctor
-npx --yes @twkim96/control-server@latest status
+npx --yes @twkim96/control-server@next doctor
+npx --yes @twkim96/control-server@next status
 ```
 
 If npm is temporarily unavailable but `current` is intact, run the bundled CLI:
@@ -38,7 +38,7 @@ sed -n '1,80p' ~/.control-server/install.json
 For a problem found after the immediate health gate:
 
 ```bash
-npx --yes @twkim96/control-server@latest rollback
+npx --yes @twkim96/control-server@next rollback
 ```
 
 Rollback only selects an older release whose completion marker exists. It also performs

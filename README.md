@@ -11,36 +11,51 @@
 
 ## 설치
 
-요구 사항은 macOS, Node.js 22 이상과 npm, Python 3.10 이상입니다. Apple Silicon을
-우선 검증하며 Intel macOS는 패키지 CI 검증 전까지 잠정 지원입니다.
+요구 사항은 macOS 13 이상, Node.js 22 이상과 npm, Python 3.10 이상입니다.
+Apple Silicon은 실제 장비에서 검증했으며, Intel macOS는 CI 검증을 통과했지만 실제
+장비 설치 검증은 아직 대기 중입니다.
+
+Homebrew를 사용한다면 다음 명령으로 준비하고 버전을 확인할 수 있습니다.
 
 ```bash
-npx --yes @twkim96/control-server@latest install
+brew install node python
+
+node --version
+npm --version
+python3 --version
 ```
+
+현재 1.5.0 공개 베타는 npm의 `next` 태그로 제공합니다.
+
+```bash
+npx --yes @twkim96/control-server@next install
+```
+
+같은 빌드를 재현하려면 `@next` 대신 고정 버전 `@1.5.0`을 사용할 수 있습니다.
 
 설치기는 `~/.control-server`에 versioned release와 private config/runtime/log를 만들고,
 Python 가상환경과 격리 PM2를 준비한 뒤 사용자 LaunchAgent를 설치합니다. 비밀번호를
 지정하지 않으면 안전한 초기 비밀번호를 생성해 한 번만 출력합니다.
 
 ```bash
-npx --yes @twkim96/control-server@latest doctor
-npx --yes @twkim96/control-server@latest status
-npx --yes @twkim96/control-server@latest open
+npx --yes @twkim96/control-server@next doctor
+npx --yes @twkim96/control-server@next status
+npx --yes @twkim96/control-server@next open
 ```
 
 업데이트와 제거:
 
 ```bash
-npx --yes @twkim96/control-server@latest update
-npx --yes @twkim96/control-server@latest rollback
-npx --yes @twkim96/control-server@latest uninstall
+npx --yes @twkim96/control-server@next update
+npx --yes @twkim96/control-server@next rollback
+npx --yes @twkim96/control-server@next uninstall
 ```
 
 자세한 내용은 [설치](./docs/INSTALL.md), [업데이트와 rollback](./docs/UPDATING.md),
 [제거](./docs/UNINSTALL.md), [복구](./docs/RECOVERY.md)를 참고하세요. 기존 source checkout의 LaunchAgent는 자동으로
 덮어쓰지 않으며 `migrate --plan`만 읽기 전용으로 제공합니다.
 
-명령을 짧게 쓰고 싶다면 `npm install -g @twkim96/control-server` 후
+명령을 짧게 쓰고 싶다면 `npm install -g @twkim96/control-server@next` 후
 `control-server status`처럼 사용할 수 있습니다. daemon 설치는 npm lifecycle에서
 자동 실행되지 않으며 항상 명시적인 `install` 명령이 필요합니다.
 

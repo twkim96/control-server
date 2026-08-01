@@ -5,7 +5,7 @@ unloads its LaunchAgent, and removes application releases. Config, logs and runt
 preserved for recovery or reinstall:
 
 ```bash
-npx --yes @twkim96/control-server@latest uninstall
+npx --yes @twkim96/control-server@next uninstall
 ```
 
 For non-interactive use, add `--yes`.
@@ -13,7 +13,7 @@ For non-interactive use, add `--yes`.
 Complete deletion requires an explicit purge confirmation:
 
 ```bash
-npx --yes @twkim96/control-server@latest uninstall --purge
+npx --yes @twkim96/control-server@next uninstall --purge
 ```
 
 `--purge` removes the managed home including service inventory, password, logs,

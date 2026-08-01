@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { parseArgs } from "../../lib/cli.mjs";
+import { parseArgs, runCli } from "../../lib/cli.mjs";
 import {
   compareVersions,
   copyApplication,
@@ -46,6 +46,34 @@ test("parseArgs accepts explicit rollback target", () => {
 test("parseArgs accepts an install port", () => {
   assert.equal(parseArgs(["install", "--port", "19000"]).port, 19000);
   assert.throws(() => parseArgs(["install", "--port", "nope"]), /정수/);
+});
+
+test("CLI reports where a generated initial password is stored", async () => {
+  const parent = await fs.promises.mkdtemp("/private/tmp/cs-password-output-");
+  const home = path.join(parent, "managed");
+  const previousSkip = process.env.CONTROL_SERVER_TEST_SKIP_DEPS;
+  const previousPassword = process.env.CONTROL_PASSWORD;
+  const originalLog = console.log;
+  const messages = [];
+  process.env.CONTROL_SERVER_TEST_SKIP_DEPS = "1";
+  delete process.env.CONTROL_PASSWORD;
+  console.log = (...args) => messages.push(args.join(" "));
+  try {
+    assert.equal(await runCli(["install", "--home", home, "--no-start"]), 0);
+    assert.equal(
+      messages.includes(
+        `비밀번호 저장 위치: ${resolveLayout(home).envPath} (권한 0600)`,
+      ),
+      true,
+    );
+  } finally {
+    console.log = originalLog;
+    if (previousSkip === undefined) delete process.env.CONTROL_SERVER_TEST_SKIP_DEPS;
+    else process.env.CONTROL_SERVER_TEST_SKIP_DEPS = previousSkip;
+    if (previousPassword === undefined) delete process.env.CONTROL_PASSWORD;
+    else process.env.CONTROL_PASSWORD = previousPassword;
+    await fs.promises.rm(parent, { recursive: true, force: true });
+  }
 });
 
 test("managed home rejects broad destructive targets", () => {

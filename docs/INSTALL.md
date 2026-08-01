@@ -6,14 +6,28 @@
 - Node.js 22 or later with npm
 - Python 3.10 or later
 
-Apple Silicon is the verified release platform. Intel macOS remains provisional until
-the packaged install workflow passes on an x64 runner.
+Apple Silicon has been verified on physical hardware. Intel macOS passes the complete
+x64 CI package workflow, but physical-device installation is still pending.
+
+With Homebrew, install the prerequisites and verify the resolved versions:
+
+```bash
+brew install node python
+
+node --version
+npm --version
+python3 --version
+```
 
 ## Managed npm installation
 
 ```bash
-npx --yes @twkim96/control-server@latest install
+npx --yes @twkim96/control-server@next install
 ```
+
+The public beta uses the `next` dist-tag. Use
+`npx --yes @twkim96/control-server@1.5.0 install` when an exact reproducible version is
+preferred.
 
 Use `install --port 9100` when the default port 9000 is already occupied. Port changes
 after installation are an explicit config/LaunchAgent operation and are not performed
@@ -43,7 +57,7 @@ Use a different short root only when necessary:
 
 ```bash
 CONTROL_SERVER_HOME="$HOME/.cs" \
-  npx --yes @twkim96/control-server@latest install
+  npx --yes @twkim96/control-server@next install
 ```
 
 PM2 sockets have a macOS path-length limit. The installer rejects a home whose
@@ -53,7 +67,7 @@ For shorter management commands, install the CLI globally. Global npm installati
 does not start a daemon by itself:
 
 ```bash
-npm install -g @twkim96/control-server
+npm install -g @twkim96/control-server@next
 control-server status
 ```
 
@@ -63,7 +77,7 @@ The installer never replaces an existing `com.twkim.server-control` LaunchAgent 
 points outside the managed home. Inspect the proposed one-time move first:
 
 ```bash
-npx --yes @twkim96/control-server@latest migrate --plan \
+npx --yes @twkim96/control-server@next migrate --plan \
   --source /path/to/control-server
 ```
 

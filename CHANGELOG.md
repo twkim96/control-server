@@ -3,7 +3,7 @@
 All notable changes are documented here. The project follows semantic versioning from
 the 1.5.0 public distribution release onward.
 
-## [1.5.0] - Unreleased
+## [1.5.0] - 2026-08-01
 
 ### Added
 
@@ -19,6 +19,8 @@ the 1.5.0 public distribution release onward.
   retaining checkout-compatible defaults
 - PM2 remains pinned and isolated under a short dedicated `PM2_HOME`
 - runtime and development Python requirements are separated
+- public-beta commands use the npm `next` tag and document prerequisite installation
+- generated-password output identifies the private `run.env` recovery location
 
 ### Removed
 
