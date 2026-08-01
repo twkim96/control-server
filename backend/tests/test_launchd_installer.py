@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import plistlib
 import subprocess
+import sys
 from pathlib import Path
 
 
@@ -28,7 +29,7 @@ def test_launchd_renderer_supports_managed_paths(tmp_path: Path) -> None:
             "CONTROL_LOG_DIR": str(data / "logs"),
             "CONTROL_RUNTIME_DIR": str(data / "runtime"),
             "CONTROL_FRONTEND_DIST": str(data / "frontend" / "dist"),
-            "CONTROL_PYTHON": str(REPO_ROOT / ".venv" / "bin" / "python"),
+            "CONTROL_PYTHON": sys.executable,
             "CONTROL_PM2_NODE": subprocess.check_output(
                 ["/usr/bin/which", "node"], text=True
             ).strip(),
