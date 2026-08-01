@@ -25,37 +25,38 @@ npm --version
 python3 --version
 ```
 
-현재 1.5.0 공개 베타는 npm의 `next` 태그로 제공합니다.
+일반 설치와 공유에는 npm의 `latest` 태그를 사용합니다. `next`는 정식 배포 전에
+새 버전을 검증하는 미리보기 채널입니다.
 
 ```bash
-npx --yes @twkim96/control-server@next install
+npx --yes @twkim96/control-server@latest install
 ```
 
-같은 빌드를 재현하려면 `@next` 대신 고정 버전 `@1.5.0`을 사용할 수 있습니다.
+같은 빌드를 재현하려면 `@latest` 대신 고정 버전 `@1.5.0`을 사용할 수 있습니다.
 
 설치기는 `~/.control-server`에 versioned release와 private config/runtime/log를 만들고,
 Python 가상환경과 격리 PM2를 준비한 뒤 사용자 LaunchAgent를 설치합니다. 비밀번호를
 지정하지 않으면 안전한 초기 비밀번호를 생성해 한 번만 출력합니다.
 
 ```bash
-npx --yes @twkim96/control-server@next doctor
-npx --yes @twkim96/control-server@next status
-npx --yes @twkim96/control-server@next open
+npx --yes @twkim96/control-server@latest doctor
+npx --yes @twkim96/control-server@latest status
+npx --yes @twkim96/control-server@latest open
 ```
 
 업데이트와 제거:
 
 ```bash
-npx --yes @twkim96/control-server@next update
-npx --yes @twkim96/control-server@next rollback
-npx --yes @twkim96/control-server@next uninstall
+npx --yes @twkim96/control-server@latest update
+npx --yes @twkim96/control-server@latest rollback
+npx --yes @twkim96/control-server@latest uninstall
 ```
 
 자세한 내용은 [설치](./docs/INSTALL.md), [업데이트와 rollback](./docs/UPDATING.md),
 [제거](./docs/UNINSTALL.md), [복구](./docs/RECOVERY.md)를 참고하세요. 기존 source checkout의 LaunchAgent는 자동으로
 덮어쓰지 않으며 `migrate --plan`만 읽기 전용으로 제공합니다.
 
-명령을 짧게 쓰고 싶다면 `npm install -g @twkim96/control-server@next` 후
+명령을 짧게 쓰고 싶다면 `npm install -g @twkim96/control-server@latest` 후
 `control-server status`처럼 사용할 수 있습니다. daemon 설치는 npm lifecycle에서
 자동 실행되지 않으며 항상 명시적인 `install` 명령이 필요합니다.
 

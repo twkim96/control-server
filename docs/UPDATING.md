@@ -1,10 +1,10 @@
 # Updating and rollback
 
 Run the target package explicitly so the updater itself and the application release
-come from the same version. During the public beta, that target is the `next` tag:
+come from the same version. General updates use the `latest` tag:
 
 ```bash
-npx --yes @twkim96/control-server@next update
+npx --yes @twkim96/control-server@latest update
 ```
 
 The updater prepares the complete release, Python environment, PM2 dependency and
@@ -19,7 +19,7 @@ If a problem appears after the immediate health gate passed, explicitly return t
 latest completed older release:
 
 ```bash
-npx --yes @twkim96/control-server@next rollback
+npx --yes @twkim96/control-server@latest rollback
 ```
 
 Use `rollback --to 1.5.0` to select a particular installed older release. Rollback also

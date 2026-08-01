@@ -22,10 +22,11 @@ python3 --version
 ## Managed npm installation
 
 ```bash
-npx --yes @twkim96/control-server@next install
+npx --yes @twkim96/control-server@latest install
 ```
 
-The public beta uses the `next` dist-tag. Use
+General installation uses the `latest` dist-tag. The `next` tag is reserved for preview
+releases before they are promoted to `latest`. Use
 `npx --yes @twkim96/control-server@1.5.0 install` when an exact reproducible version is
 preferred.
 
@@ -57,7 +58,7 @@ Use a different short root only when necessary:
 
 ```bash
 CONTROL_SERVER_HOME="$HOME/.cs" \
-  npx --yes @twkim96/control-server@next install
+  npx --yes @twkim96/control-server@latest install
 ```
 
 PM2 sockets have a macOS path-length limit. The installer rejects a home whose
@@ -67,7 +68,7 @@ For shorter management commands, install the CLI globally. Global npm installati
 does not start a daemon by itself:
 
 ```bash
-npm install -g @twkim96/control-server@next
+npm install -g @twkim96/control-server@latest
 control-server status
 ```
 
@@ -77,7 +78,7 @@ The installer never replaces an existing `com.twkim.server-control` LaunchAgent 
 points outside the managed home. Inspect the proposed one-time move first:
 
 ```bash
-npx --yes @twkim96/control-server@next migrate --plan \
+npx --yes @twkim96/control-server@latest migrate --plan \
   --source /path/to/control-server
 ```
 
