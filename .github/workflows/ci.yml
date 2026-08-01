@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  macos:
+    name: macOS (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            arch: arm64
+            python: "3.12"
+          - os: macos-15-intel
+            arch: x64
+            python: "3.10"
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            frontend/package-lock.json
+            ops/pm2/package-lock.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: |
+            backend/requirements-dev.txt
+            backend/requirements-runtime.lock
+      - run: python -m pip install -r backend/requirements-dev.txt
+      - run: npm ci --ignore-scripts
+      - run: npm ci --prefix frontend
+      - run: npm ci --prefix ops/pm2
+      - run: python -m pytest -q
+      - run: npm test
+      - run: npm run typecheck --prefix frontend
+      - run: npm run lint --prefix frontend
+      - run: npm run build --prefix frontend
+      - run: npm run package:inspect

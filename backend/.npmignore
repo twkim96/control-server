@@ -1,0 +1,8 @@
+conftest.py
+tests/
+requirements-dev.txt
+config.yml
+logs/
+runtime/
+__pycache__/
+.pytest_cache/

@@ -1,0 +1,68 @@
+{
+  "name": "@twkim96/control-server",
+  "version": "1.5.0",
+  "description": "A local-first macOS dashboard for managing long-running services and one-shot tasks",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "control-server": "bin/control-server.mjs"
+  },
+  "os": [
+    "darwin"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "files": [
+    "bin/*.mjs",
+    "lib/*.mjs",
+    "backend/*.py",
+    "backend/routes/*.py",
+    "backend/config.example.yml",
+    "backend/requirements.txt",
+    "backend/requirements-runtime.lock",
+    "frontend/dist/**",
+    "launchd/com.twkim.server-control.plist",
+    "launchd/install.sh",
+    "launchd/run.env.example",
+    "ops/pm2/package.json",
+    "ops/pm2/npm-shrinkwrap.json",
+    "scripts/pm2ctl.sh",
+    "API.md",
+    "PM2_RECOVERY.md",
+    "README.md",
+    "THIRD_PARTY_NOTICES.md",
+    "LICENSE",
+    "LICENSES/*.txt",
+    "docs/*.md",
+    "docs/assets/*",
+    "SECURITY.md",
+    "CONTRIBUTING.md",
+    "CHANGELOG.md"
+  ],
+  "scripts": {
+    "test": "node --test tests/cli/*.test.mjs",
+    "prepack": "node scripts/prepare_npm_package.mjs",
+    "package:dry-run": "npm pack --dry-run",
+    "package:inspect": "node scripts/inspect_npm_package.mjs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/twkim96/control-server.git"
+  },
+  "homepage": "https://github.com/twkim96/control-server#readme",
+  "bugs": {
+    "url": "https://github.com/twkim96/control-server/issues"
+  },
+  "keywords": [
+    "pm2",
+    "process-manager",
+    "macos",
+    "launchd",
+    "dashboard",
+    "self-hosted"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}

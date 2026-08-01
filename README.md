@@ -7,155 +7,86 @@
 > 이 프로젝트는 localhost, LAN 또는 Tailscale 같은 신뢰된 사설망에서 사용하는 것을
 > 전제로 합니다. 인터넷에 직접 노출하는 용도로 설계되지 않았습니다.
 
+![Control Server dashboard](./docs/assets/dashboard.png)
+
+## 설치
+
+요구 사항은 macOS, Node.js 22 이상과 npm, Python 3.10 이상입니다. Apple Silicon을
+우선 검증하며 Intel macOS는 패키지 CI 검증 전까지 잠정 지원입니다.
+
+```bash
+npx --yes @twkim96/control-server@latest install
+```
+
+설치기는 `~/.control-server`에 versioned release와 private config/runtime/log를 만들고,
+Python 가상환경과 격리 PM2를 준비한 뒤 사용자 LaunchAgent를 설치합니다. 비밀번호를
+지정하지 않으면 안전한 초기 비밀번호를 생성해 한 번만 출력합니다.
+
+```bash
+npx --yes @twkim96/control-server@latest doctor
+npx --yes @twkim96/control-server@latest status
+npx --yes @twkim96/control-server@latest open
+```
+
+업데이트와 제거:
+
+```bash
+npx --yes @twkim96/control-server@latest update
+npx --yes @twkim96/control-server@latest rollback
+npx --yes @twkim96/control-server@latest uninstall
+```
+
+자세한 내용은 [설치](./docs/INSTALL.md), [업데이트와 rollback](./docs/UPDATING.md),
+[제거](./docs/UNINSTALL.md), [복구](./docs/RECOVERY.md)를 참고하세요. 기존 source checkout의 LaunchAgent는 자동으로
+덮어쓰지 않으며 `migrate --plan`만 읽기 전용으로 제공합니다.
+
+명령을 짧게 쓰고 싶다면 `npm install -g @twkim96/control-server` 후
+`control-server status`처럼 사용할 수 있습니다. daemon 설치는 npm lifecycle에서
+자동 실행되지 않으며 항상 명시적인 `install` 명령이 필요합니다.
+
 ## 주요 기능
 
 - 등록된 서비스의 시작, 중지, 재시작 및 상태 확인
 - HTTP/TCP 헬스체크와 포트 점유 감지
 - stdout/stderr 로그 tail 및 SSE 실시간 스트리밍
-- CPU, 메모리, 자식 프로세스 리소스 표시
+- 부모·자식 프로세스 CPU와 RSS 합계 표시
 - 웹 UI에서 서비스와 일회성 Action Group 등록·수정·정렬
-- 외부에서 이미 실행 중인 프로세스 감지와 중복 실행 방지
-- Python 인터프리터 자동 탐색
+- 외부 프로세스 안전 진단과 중복 실행 방지
 - 세션 쿠키 로그인과 CSRF 보호
 - launchd로 Control Server 자동 실행, 격리 PM2로 등록 서비스 관리
+- config reload 보호, last-good checkpoint와 PM2 manifest 복구
 
 ## 구성
 
 - Backend: Python, Flask, Waitress, psutil, ruamel.yaml
 - Frontend: React, TypeScript, Vite
-- Runtime: macOS launchd (Control Server), isolated PM2 (managed services, v1.4.3)
+- Runtime: macOS launchd (Control Server), isolated PM2 7.0.3 (managed services)
+- Distribution: npm CLI and versioned managed releases (v1.5.0)
 - Configuration: YAML
 
-프로젝트의 HTTP API는 [API.md](./API.md)를 참고하세요.
+HTTP API는 [API.md](./API.md), AI를 통한 표준 서버 등록은
+[AI service registration contract](./docs/AI_REGISTRATION.md)를 참고하세요.
 
-## 등록 위치 결정 — AI 에이전트 필독
-
-사용자가 “이 웹서버를 컨트롤서버에 넣어줘”, “서버 목록에 추가해줘”라고 요청하면
-기본 의미는 **Servers에 장기 실행 서비스로 등록**하는 것입니다. 서비스마다 Control
-Server 프런트엔드의 새 탭·라우트·전용 화면을 만들거나, 일회성 명령용 Services에
-등록하지 마세요.
-
-| 대상 | 등록 위치 | 사용 API |
-| --- | --- | --- |
-| 포트를 열고 계속 실행되는 HTTP/TCP 서버, worker, gateway, tunnel | **Servers** | `POST /api/config/services` |
-| update, deploy, sync, scan, build처럼 실행 후 끝나는 명령 | **Services**의 Action Group | `POST /api/config/actions` |
-| 장기 서버와 그 서버의 배포/업데이트 명령 | 서버는 **Servers**, 명령은 **Services** | 두 API를 각각 사용 |
-| Control Server 자체 기능 | 기존 화면에 통합할 수 없고 사용자가 명시적으로 요청한 경우에만 UI 개발 | 코드 변경 |
-
-Python, Go, Node, Bun, shell wrapper 등 구현 언어는 분류 기준이 아닙니다. **계속 살아
-있어야 하는 프로세스인지, 한 번 실행하고 종료되는 명령인지**로 판단합니다. 관리 대상 웹
-페이지는 Control Server 안에 iframe이나 새 탭으로 끼워 넣지 않고 서비스의 `open_url`을
-`URL 열기`로 엽니다.
-
-### AI의 서버 등록 작업 순서
-
-가능하면 YAML을 직접 편집하는 대신 인증된 **서비스 설정 API**를 사용합니다. API는
-필드 검증, PM2 runtime 정의 조정, last-good checkpoint 저장, registry reload를 한
-요청 흐름에서 처리합니다.
-
-1. 대상 프로젝트에서 실제 `cwd`, 실행 명령, 포트, 사용자 화면 URL, health URL,
-   정상 종료 signal을 확인합니다. 추측한 경로나 포트를 등록하지 않습니다.
-2. `GET /api/config/services`로 기존 ID·포트·등록 내용을 확인합니다.
-3. 로그인 세션의 `GET /api/auth/me` 응답에서 `csrf_token`을 받고, mutation에
-   `X-CSRF-Token`을 사용합니다.
-4. 신규는 `POST /api/config/services`, 수정은 `PUT /api/config/services/<id>`로
-   전체 서비스 payload를 보냅니다.
-5. API가 2xx를 반환하면 registry reload까지 이미 완료된 것입니다. 성공 뒤
-   `POST /api/config/reload`를 다시 호출하지 않습니다.
-6. `GET /api/config/services`와 `GET /api/services/<id>`로 저장 결과와 런타임 상태를
-   확인합니다.
-7. “등록” 요청만 받았다면 서비스를 임의로 시작하지 않습니다. 실행 요청도 받았을 때만
-   `POST /api/services/<id>/actions/start`를 호출하고 health/포트를 확인합니다.
-
-`backend/config.yml`을 직접 수정해도 되지만 fallback으로 취급합니다. 직접 수정한 경우에만
-`POST /api/config/reload`를 호출하고, 2xx 응답과 `GET /api/config/services` 결과를
-확인하세요. reload가 `409 config_reload_blocked`를 반환하면 PM2 상태를 우회하거나
-Control Server를 임의 재시작하지 말고 실행 중 서비스와 변경 필드를 먼저 확인합니다.
-
-### 표준 서비스 액션
-
-서비스별 표현을 action label에 넣지 말고 다음 ID·타입·라벨·순서를 그대로 사용합니다.
-DevSpace 같은 gateway도 `Gateway 상태`, `통합 로그`, `Gateway 열기`로 바꾸지 않습니다.
-
-| 순서 | ID | type | 표준 라벨 | 포함 조건 |
-| ---: | --- | --- | --- | --- |
-| 1 | `start` | `process_start` | `시작` | 기본 |
-| 2 | `stop` | `process_stop` | `중지` | 기본 |
-| 3 | `restart` | `process_restart` | `재시작` | 기본 |
-| 4 | `health` | `health_check` | `상태 확인` | health를 사용할 때 |
-| 5 | `logs` | `show_logs` | `로그` | log를 사용할 때 |
-| 6 | `open` | `open_url` | `URL 열기` | `open_url`이 있을 때 |
-
-PM2 backend의 stop primary signal은 `SIGINT`로 고정합니다. 기본 수동 서비스는
-`timeout_seconds: 5`, `confirm_required: false`, fallback은
-`["SIGTERM", "SIGKILL"]`을 사용합니다. 장시간 정리가 필요한 서비스만 실제 종료 동작을
-확인한 뒤 timeout을 늘립니다.
-
-### 서비스 payload 기본값
-
-- `id`: 안정적인 소문자 `snake_case` 권장. 생성 후 임의로 바꾸지 않습니다.
-- `name`: 화면에 표시할 짧은 서비스명. action label에는 반복하지 않습니다.
-- `cwd`: 실제 프로젝트 절대 경로이며 `controller.allowed_path_roots` 안이어야 합니다.
-- `entry_file`: 화면 표시와 진단용 실제 진입 파일입니다.
-- `command`: shell 문자열이 아닌 argv 배열입니다. Python은 프로젝트 venv의 절대 경로를
-  우선 사용합니다.
-- `env`: 값은 문자열로 보내며 비밀번호·토큰을 문서나 커밋에 복사하지 않습니다.
-- `port`: 실제 listen 포트입니다. `port_env_name`은 앱이 그 환경변수를 읽을 때만
-  지정합니다.
-- `open_url`: 사용자가 열 실제 화면 URL입니다. health endpoint를 대신 넣지 않습니다.
-- `health.url`: 가능하면 짧게 2xx를 반환하는 `/health` 또는 `/healthz`를 사용합니다.
-- `lifecycle`: 별도 요청이 없으면 `manual`, `autostart: false`,
-  `unmanaged_policy: status_only`를 사용합니다.
-
-정확한 JSON 스키마와 인증 오류는 [API.md의 서비스 등록 계약](./API.md#자동화ai-서비스-등록-계약)을
-참고하세요.
-
-## 요구 사항
-
-- macOS
-- Python 3.10 이상
-- Node.js 22 이상과 npm
-
-Tailscale HTTPS 인증서 기능을 사용할 때는 Tailscale 앱과 CLI가 추가로 필요합니다.
-
-## 빠른 시작
+## 소스에서 개발 실행
 
 ```bash
 git clone https://github.com/twkim96/control-server.git
 cd control-server
-
-# Python 환경
 python3 -m venv .venv
-.venv/bin/pip install -r backend/requirements.txt
-
-# 프런트엔드 설치 및 빌드
-cd frontend
-npm ci
-npm run build
-cd ..
-
-# 장기 실행 서비스 관리용 pinned PM2
-/opt/homebrew/bin/npm ci --prefix ops/pm2
-
-# 로컬 설정과 비밀번호 파일
+.venv/bin/pip install -r backend/requirements-dev.txt
+npm ci --prefix frontend
+npm run build --prefix frontend
+npm ci --prefix ops/pm2
 cp backend/config.example.yml backend/config.yml
 cp launchd/run.env.example launchd/run.env
 ```
 
-`launchd/run.env`의 `CONTROL_PASSWORD`를 충분히 긴 값으로 바꾼 후 실행합니다.
+`launchd/run.env`의 `CONTROL_PASSWORD`를 충분히 긴 값으로 바꾼 후
+`bash scripts/dev_run.sh`를 실행합니다. 기본 주소는
+[http://127.0.0.1:9000](http://127.0.0.1:9000)입니다.
 
-```bash
-bash scripts/dev_run.sh
-```
-
-기본 주소는 [http://127.0.0.1:9000](http://127.0.0.1:9000)입니다.
-
-다음 파일은 머신별 경로와 비밀값을 포함할 수 있어 Git에서 추적하지 않습니다.
-
-- `backend/config.yml`
-- `launchd/run.env`
-- `backend/runtime/`
-- `backend/logs/`
+`backend/config.yml`, `launchd/run.env`, `backend/runtime`, `backend/logs`는 머신별
+경로와 비밀값을 포함하므로 Git에서 추적하지 않습니다.
 
 ## 개발 모드
 

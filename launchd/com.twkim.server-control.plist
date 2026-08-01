@@ -6,9 +6,13 @@
   이 파일 자체는 비밀값이 들어있지 않아 git에 그대로 둔다.
 
   치환 토큰:
+    @@LABEL@@          : LaunchAgent label
     @@REPO_ROOT@@      : 레포 루트 절대경로
     @@PYTHON@@         : .venv 안 python 절대경로
     @@CONFIG@@         : 사용할 config.yml 절대경로
+    @@LOG_DIR@@        : 서비스 및 launchd 로그 경로
+    @@RUNTIME_DIR@@    : state/checkpoint/PM2 runtime 경로
+    @@FRONTEND_DIST@@  : 빌드된 프런트엔드 경로
     @@CONTROL_PASSWORD@@: 인스톨러가 환경에서 가져와 주입
     @@CONTROL_SECRET@@  : (선택) 같은 방식
     @@CONTROL_PM2_*@@    : PM2 Node/CLI/home override
@@ -17,7 +21,7 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.twkim.server-control</string>
+    <string>@@LABEL@@</string>
 
     <key>ProgramArguments</key>
     <array>
@@ -25,6 +29,12 @@
         <string>@@REPO_ROOT@@/backend/app.py</string>
         <string>--config</string>
         <string>@@CONFIG@@</string>
+        <string>--log-dir</string>
+        <string>@@LOG_DIR@@</string>
+        <string>--runtime-dir</string>
+        <string>@@RUNTIME_DIR@@</string>
+        <string>--frontend-dist</string>
+        <string>@@FRONTEND_DIST@@</string>
         <string>--server</string>
         <string>waitress</string>
         <string>--log-level</string>
@@ -57,14 +67,6 @@
         <string>@@CONTROL_PM2_HOME@@</string>
         <key>CONTROL_PROCESS_BACKEND</key>
         <string>@@CONTROL_PROCESS_BACKEND@@</string>
-        <key>FILE_CHECK_NOVELPIA_EMAIL</key>
-        <string>@@NOVELPIA_EMAIL@@</string>
-        <key>FILE_CHECK_NOVELPIA_PASSWORD</key>
-        <string>@@NOVELPIA_PASSWORD@@</string>
-        <key>FILE_CHECK_GOOGLE_CREDENTIALS</key>
-        <string>@@GOOGLE_CREDENTIALS@@</string>
-        <key>FILE_CHECK_GOOGLE_SPREADSHEET_ID</key>
-        <string>@@GOOGLE_SPREADSHEET_ID@@</string>
         <!-- macOS launchd의 기본 PATH는 /usr/bin:/bin:/usr/sbin:/sbin 뿐이라
              Homebrew의 python 등 사용자 도구를 못 찾는다. 자식 프로세스에도 그대로
              상속되므로 여기서 한 번에 늘려둔다. install.sh가 sed로 치환하지 않는
@@ -74,9 +76,9 @@
     </dict>
 
     <key>StandardOutPath</key>
-    <string>@@REPO_ROOT@@/backend/logs/_launchd.out</string>
+    <string>@@LOG_DIR@@/_launchd.out</string>
     <key>StandardErrorPath</key>
-    <string>@@REPO_ROOT@@/backend/logs/_launchd.err</string>
+    <string>@@LOG_DIR@@/_launchd.err</string>
 
     <key>ProcessType</key>
     <string>Standard</string>

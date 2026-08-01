@@ -11,12 +11,15 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import sys
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Mapping
 
 import psutil
 from flask import Flask, jsonify
@@ -48,6 +51,63 @@ DEFAULT_CONFIG_PATH = BACKEND_DIR / "config.yml"
 DEFAULT_LOG_DIR = BACKEND_DIR / "logs"
 DEFAULT_RUNTIME_DIR = BACKEND_DIR / "runtime"
 DEFAULT_FRONTEND_DIST = REPO_ROOT / "frontend" / "dist"
+
+
+def _read_app_version() -> str:
+    try:
+        payload = json.loads((REPO_ROOT / "package.json").read_text(encoding="utf-8"))
+        version = payload.get("version")
+        return version if isinstance(version, str) and version else "unknown"
+    except (OSError, ValueError, TypeError):
+        return "unknown"
+
+
+APP_VERSION = _read_app_version()
+
+CONFIG_PATH_ENV = "CONTROL_CONFIG_PATH"
+LOG_DIR_ENV = "CONTROL_LOG_DIR"
+RUNTIME_DIR_ENV = "CONTROL_RUNTIME_DIR"
+FRONTEND_DIST_ENV = "CONTROL_FRONTEND_DIST"
+
+
+@dataclass(frozen=True)
+class AppPaths:
+    config_path: Path
+    log_dir: Path
+    runtime_dir: Path
+    frontend_dist: Path
+
+
+def resolve_app_paths(
+    *,
+    config_path: str | os.PathLike[str] | None = None,
+    log_dir: str | os.PathLike[str] | None = None,
+    runtime_dir: str | os.PathLike[str] | None = None,
+    frontend_dist: str | os.PathLike[str] | None = None,
+    environ: Mapping[str, str] | None = None,
+) -> AppPaths:
+    """Resolve CLI, environment, then checkout-compatible default paths."""
+
+    env = os.environ if environ is None else environ
+
+    def pick(
+        explicit: str | os.PathLike[str] | None,
+        env_name: str,
+        default: Path,
+    ) -> Path:
+        if explicit is not None:
+            return Path(explicit).expanduser()
+        from_env = env.get(env_name)
+        if from_env:
+            return Path(from_env).expanduser()
+        return default
+
+    return AppPaths(
+        config_path=pick(config_path, CONFIG_PATH_ENV, DEFAULT_CONFIG_PATH),
+        log_dir=pick(log_dir, LOG_DIR_ENV, DEFAULT_LOG_DIR),
+        runtime_dir=pick(runtime_dir, RUNTIME_DIR_ENV, DEFAULT_RUNTIME_DIR),
+        frontend_dist=pick(frontend_dist, FRONTEND_DIST_ENV, DEFAULT_FRONTEND_DIST),
+    )
 
 
 def create_app(
@@ -160,6 +220,7 @@ def create_app(
         return jsonify(
             {
                 "ok": True,
+                "version": APP_VERSION,
                 "password_configured": is_password_configured(),
                 "controller": {
                     "host": config.controller.host,
@@ -262,7 +323,10 @@ def _setup_logging(level: str) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="server_control backend")
-    parser.add_argument("--config", default=str(DEFAULT_CONFIG_PATH))
+    parser.add_argument("--config", default=None)
+    parser.add_argument("--log-dir", default=None)
+    parser.add_argument("--runtime-dir", default=None)
+    parser.add_argument("--frontend-dist", default=None)
     parser.add_argument("--host", default=None, help="config의 controller.host를 override")
     parser.add_argument("--port", type=int, default=None, help="config의 controller.port를 override")
     parser.add_argument("--log-level", default="INFO")
@@ -273,12 +337,21 @@ def main(argv: list[str] | None = None) -> int:
         help="기본은 waitress 단일 프로세스",
     )
     args = parser.parse_args(argv)
+    paths = resolve_app_paths(
+        config_path=args.config,
+        log_dir=args.log_dir,
+        runtime_dir=args.runtime_dir,
+        frontend_dist=args.frontend_dist,
+    )
 
     _setup_logging(args.log_level)
 
     try:
         app = create_app(
-            config_path=args.config,
+            config_path=paths.config_path,
+            log_dir=paths.log_dir,
+            runtime_dir=paths.runtime_dir,
+            frontend_dist=paths.frontend_dist,
             run_autostart=True,
             process_backend=os.environ.get("CONTROL_PROCESS_BACKEND", "native"),
         )
@@ -286,7 +359,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[config error] {exc}", file=sys.stderr)
         return 2
 
-    cfg = load_config(args.config)
+    cfg = load_config(paths.config_path)
     host = args.host or cfg.controller.host
     port = args.port or cfg.controller.port
 

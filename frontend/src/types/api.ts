@@ -8,6 +8,7 @@ export interface ApiError {
 
 export interface MetaResponse {
   ok: true;
+  version: string;
   password_configured: boolean;
   controller: { host: string; port: number };
   service_count: number;
