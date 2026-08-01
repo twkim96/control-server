@@ -3,6 +3,15 @@
 All notable changes are documented here. The project follows semantic versioning from
 the 1.5.0 public distribution release onward.
 
+## [1.5.1] - 2026-08-01
+
+### Changed
+
+- general installation, management, recovery, and uninstall commands now use the npm
+  `latest` tag
+- the `next` tag is documented as the preview channel for release candidates
+- fixed-version installation examples now point to `1.5.1`
+
 ## [1.5.0] - 2026-08-01
 
 ### Added
