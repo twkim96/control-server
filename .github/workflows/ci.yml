@@ -44,8 +44,8 @@ jobs:
       - run: npm ci --prefix frontend
       - run: npm ci --prefix ops/pm2
       - run: python -m pytest -q
+      - run: npm run build --prefix frontend
       - run: npm test
       - run: npm run typecheck --prefix frontend
       - run: npm run lint --prefix frontend
-      - run: npm run build --prefix frontend
       - run: npm run package:inspect
