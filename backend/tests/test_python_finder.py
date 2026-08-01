@@ -221,6 +221,10 @@ def test_controller_resource_route_returns_current_process_resource(client):
     assert resource["memory_rss_bytes"] > 0
     assert resource["process_count"] == 1
     assert resource["children_count"] == 0
+    assert resource["partial"] is False
+    assert resource["discovered_process_count"] == 1
+    assert resource["sampled_process_count"] == 1
+    assert resource["skipped_process_count"] == 0
 
 
 def test_controller_resource_route_ignores_stale_controller_state(client):

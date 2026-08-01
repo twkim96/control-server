@@ -8,7 +8,13 @@ import { IconButton } from "../../components/IconButton";
 import { useToast } from "../../components/useToast";
 import { useAction } from "../../hooks/useAction";
 import type { ActionMeta, ServiceMeta } from "../../types/service";
-import { formatCpuPercent, formatMemory, formatPort, formatPid } from "../../utils/format";
+import {
+  formatCpuPercent,
+  formatMemory,
+  formatPort,
+  formatPid,
+  RESOURCE_USAGE_HELP,
+} from "../../utils/format";
 import { openServiceUrl } from "../../utils/openServiceUrl";
 import { formatRelative, formatUptime } from "../../utils/time";
 import { ServerRowDetails } from "./ServerRowDetails";
@@ -179,7 +185,10 @@ export function ServerRow({
           <span className={classes.cellRuntimeMain}>
             {runtime?.alive ? formatUptime(runtime.uptime_seconds) : "—"}
           </span>
-          <span className={classes.cellRuntimeSub}>
+          <span
+            className={classes.cellRuntimeSub}
+            title={runtime?.resource?.available ? RESOURCE_USAGE_HELP : undefined}
+          >
             {runtime?.resource?.available
               ? `CPU ${formatCpuPercent(runtime.resource.cpu_percent)} · RAM ${formatMemory(runtime.resource.memory_rss_bytes)}`
               : `pid ${formatPid(runtime?.pid)}`}

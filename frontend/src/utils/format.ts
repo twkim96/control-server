@@ -1,5 +1,8 @@
 // 화면 표시용 포맷터.
 
+export const RESOURCE_USAGE_HELP =
+  "CPU는 부모·자식 프로세스를 합산하며 멀티코어에서는 100%를 넘을 수 있습니다. RAM은 부모·자식 프로세스의 RSS 합계로 공유 메모리가 중복 포함될 수 있습니다.";
+
 export function formatPort(port: number | null | undefined): string {
   if (typeof port !== "number") return "—";
   return String(port);

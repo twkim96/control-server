@@ -2,7 +2,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { RouterProvider } from "react-router-dom";
 
-import "@sun-typeface/suit/fonts/variable/woff2/SUIT-Variable.css";
+import "pretendard/dist/web/variable/pretendardvariable-dynamic-subset.css";
 import "./styles/global.css";
 import {
   applyAppearanceSettings,

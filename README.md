@@ -23,10 +23,92 @@
 
 - Backend: Python, Flask, Waitress, psutil, ruamel.yaml
 - Frontend: React, TypeScript, Vite
-- Runtime: macOS launchd (Control Server), isolated PM2 (managed services, v1.4.2)
+- Runtime: macOS launchd (Control Server), isolated PM2 (managed services, v1.4.3)
 - Configuration: YAML
 
 프로젝트의 HTTP API는 [API.md](./API.md)를 참고하세요.
+
+## 등록 위치 결정 — AI 에이전트 필독
+
+사용자가 “이 웹서버를 컨트롤서버에 넣어줘”, “서버 목록에 추가해줘”라고 요청하면
+기본 의미는 **Servers에 장기 실행 서비스로 등록**하는 것입니다. 서비스마다 Control
+Server 프런트엔드의 새 탭·라우트·전용 화면을 만들거나, 일회성 명령용 Services에
+등록하지 마세요.
+
+| 대상 | 등록 위치 | 사용 API |
+| --- | --- | --- |
+| 포트를 열고 계속 실행되는 HTTP/TCP 서버, worker, gateway, tunnel | **Servers** | `POST /api/config/services` |
+| update, deploy, sync, scan, build처럼 실행 후 끝나는 명령 | **Services**의 Action Group | `POST /api/config/actions` |
+| 장기 서버와 그 서버의 배포/업데이트 명령 | 서버는 **Servers**, 명령은 **Services** | 두 API를 각각 사용 |
+| Control Server 자체 기능 | 기존 화면에 통합할 수 없고 사용자가 명시적으로 요청한 경우에만 UI 개발 | 코드 변경 |
+
+Python, Go, Node, Bun, shell wrapper 등 구현 언어는 분류 기준이 아닙니다. **계속 살아
+있어야 하는 프로세스인지, 한 번 실행하고 종료되는 명령인지**로 판단합니다. 관리 대상 웹
+페이지는 Control Server 안에 iframe이나 새 탭으로 끼워 넣지 않고 서비스의 `open_url`을
+`URL 열기`로 엽니다.
+
+### AI의 서버 등록 작업 순서
+
+가능하면 YAML을 직접 편집하는 대신 인증된 **서비스 설정 API**를 사용합니다. API는
+필드 검증, PM2 runtime 정의 조정, last-good checkpoint 저장, registry reload를 한
+요청 흐름에서 처리합니다.
+
+1. 대상 프로젝트에서 실제 `cwd`, 실행 명령, 포트, 사용자 화면 URL, health URL,
+   정상 종료 signal을 확인합니다. 추측한 경로나 포트를 등록하지 않습니다.
+2. `GET /api/config/services`로 기존 ID·포트·등록 내용을 확인합니다.
+3. 로그인 세션의 `GET /api/auth/me` 응답에서 `csrf_token`을 받고, mutation에
+   `X-CSRF-Token`을 사용합니다.
+4. 신규는 `POST /api/config/services`, 수정은 `PUT /api/config/services/<id>`로
+   전체 서비스 payload를 보냅니다.
+5. API가 2xx를 반환하면 registry reload까지 이미 완료된 것입니다. 성공 뒤
+   `POST /api/config/reload`를 다시 호출하지 않습니다.
+6. `GET /api/config/services`와 `GET /api/services/<id>`로 저장 결과와 런타임 상태를
+   확인합니다.
+7. “등록” 요청만 받았다면 서비스를 임의로 시작하지 않습니다. 실행 요청도 받았을 때만
+   `POST /api/services/<id>/actions/start`를 호출하고 health/포트를 확인합니다.
+
+`backend/config.yml`을 직접 수정해도 되지만 fallback으로 취급합니다. 직접 수정한 경우에만
+`POST /api/config/reload`를 호출하고, 2xx 응답과 `GET /api/config/services` 결과를
+확인하세요. reload가 `409 config_reload_blocked`를 반환하면 PM2 상태를 우회하거나
+Control Server를 임의 재시작하지 말고 실행 중 서비스와 변경 필드를 먼저 확인합니다.
+
+### 표준 서비스 액션
+
+서비스별 표현을 action label에 넣지 말고 다음 ID·타입·라벨·순서를 그대로 사용합니다.
+DevSpace 같은 gateway도 `Gateway 상태`, `통합 로그`, `Gateway 열기`로 바꾸지 않습니다.
+
+| 순서 | ID | type | 표준 라벨 | 포함 조건 |
+| ---: | --- | --- | --- | --- |
+| 1 | `start` | `process_start` | `시작` | 기본 |
+| 2 | `stop` | `process_stop` | `중지` | 기본 |
+| 3 | `restart` | `process_restart` | `재시작` | 기본 |
+| 4 | `health` | `health_check` | `상태 확인` | health를 사용할 때 |
+| 5 | `logs` | `show_logs` | `로그` | log를 사용할 때 |
+| 6 | `open` | `open_url` | `URL 열기` | `open_url`이 있을 때 |
+
+PM2 backend의 stop primary signal은 `SIGINT`로 고정합니다. 기본 수동 서비스는
+`timeout_seconds: 5`, `confirm_required: false`, fallback은
+`["SIGTERM", "SIGKILL"]`을 사용합니다. 장시간 정리가 필요한 서비스만 실제 종료 동작을
+확인한 뒤 timeout을 늘립니다.
+
+### 서비스 payload 기본값
+
+- `id`: 안정적인 소문자 `snake_case` 권장. 생성 후 임의로 바꾸지 않습니다.
+- `name`: 화면에 표시할 짧은 서비스명. action label에는 반복하지 않습니다.
+- `cwd`: 실제 프로젝트 절대 경로이며 `controller.allowed_path_roots` 안이어야 합니다.
+- `entry_file`: 화면 표시와 진단용 실제 진입 파일입니다.
+- `command`: shell 문자열이 아닌 argv 배열입니다. Python은 프로젝트 venv의 절대 경로를
+  우선 사용합니다.
+- `env`: 값은 문자열로 보내며 비밀번호·토큰을 문서나 커밋에 복사하지 않습니다.
+- `port`: 실제 listen 포트입니다. `port_env_name`은 앱이 그 환경변수를 읽을 때만
+  지정합니다.
+- `open_url`: 사용자가 열 실제 화면 URL입니다. health endpoint를 대신 넣지 않습니다.
+- `health.url`: 가능하면 짧게 2xx를 반환하는 `/health` 또는 `/healthz`를 사용합니다.
+- `lifecycle`: 별도 요청이 없으면 `manual`, `autostart: false`,
+  `unmanaged_policy: status_only`를 사용합니다.
+
+정확한 JSON 스키마와 인증 오류는 [API.md의 서비스 등록 계약](./API.md#자동화ai-서비스-등록-계약)을
+참고하세요.
 
 ## 요구 사항
 
@@ -168,11 +250,11 @@ services:
       unmanaged_policy: "status_only"
     actions:
       - id: "start"
-        label: "Start"
+        label: "시작"
         type: "process_start"
         enabled: true
       - id: "stop"
-        label: "Stop"
+        label: "중지"
         type: "process_stop"
         enabled: true
         strategy:
@@ -181,8 +263,20 @@ services:
           confirm_required: false
           fallback: ["SIGTERM", "SIGKILL"]
       - id: "restart"
-        label: "Restart"
+        label: "재시작"
         type: "process_restart"
+        enabled: true
+      - id: "health"
+        label: "상태 확인"
+        type: "health_check"
+        enabled: true
+      - id: "logs"
+        label: "로그"
+        type: "show_logs"
+        enabled: true
+      - id: "open"
+        label: "URL 열기"
+        type: "open_url"
         enabled: true
 
 actions: []
@@ -202,6 +296,18 @@ actions: []
 Control Server는 시작 전 포트 점유를 확인하며, 등록 서비스는 전용
 `backend/runtime/pm2` 아래의 PM2 daemon에서 `server-control--<service_id>` 이름으로
 관리합니다. 사용자 기본 `~/.pm2`와는 별개입니다.
+
+### 리소스 측정
+
+서비스 CPU/RAM 표시는 PM2의 루트 PID `monit` 값이 아니라 Control Server의 독립
+프로세스 트리 측정값을 사용합니다. CPU는 `(pid, create_time)`별 변화량을 합산해 자식
+생성·종료와 PID 재사용에 따른 왜곡을 줄이고, TTL과 측정 구간은 monotonic clock으로
+계산합니다. 첫 실제 구간 전 CPU는 `—`가 정상이며 멀티코어 합계는 100%를 넘을 수
+있습니다.
+
+RAM은 부모·자식의 **RSS 합계**로, 공유 페이지가 중복 포함될 수 있습니다. 상세 화면의
+`일부 누락`은 자식 열거 또는 접근 실패로 값이 불완전함을 뜻합니다. 리소스 이력은 config
+reload 뒤 현재 서비스와 controller 항목만 남기고 정리합니다.
 
 PM2 운영 모드의 `process_stop` primary signal은 `SIGINT`여야 하며, 설정된 `SIGTERM`
 fallback 뒤 마지막 `SIGKILL`은 PM2가 수행합니다. 로그의 `max_bytes`/`keep` 회전은 PM2가

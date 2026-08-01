@@ -104,6 +104,11 @@ export interface RuntimeResource {
   memory_rss_bytes: number | null;
   process_count: number;
   children_count: number;
+  partial: boolean;
+  discovered_process_count: number;
+  sampled_process_count: number;
+  skipped_process_count: number;
+  window_seconds: number | null;
 }
 
 // 입양(adoption) 실패 사유. running_external 상태의 상세 응답에만 포함된다.

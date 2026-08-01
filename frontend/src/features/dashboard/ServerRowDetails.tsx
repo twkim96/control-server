@@ -15,6 +15,7 @@ import {
   formatMemory,
   formatPid,
   formatPort,
+  RESOURCE_USAGE_HELP,
 } from "../../utils/format";
 import { openServiceUrl } from "../../utils/openServiceUrl";
 import { formatRelative, formatTime, formatUptime } from "../../utils/time";
@@ -344,11 +345,17 @@ function ResourceLine({ service }: { service: ServiceMeta }) {
       </span>
     );
   }
+  const partialLabel = resource.partial
+    ? resource.skipped_process_count > 0
+      ? ` · 일부 누락 ${resource.skipped_process_count}`
+      : " · 일부 누락"
+    : "";
   return (
-    <span className={classes.detailValueMuted}>
+    <span className={classes.detailValueMuted} title={RESOURCE_USAGE_HELP}>
       CPU {formatCpuPercent(resource.cpu_percent)} · RAM{" "}
-      {formatMemory(resource.memory_rss_bytes)} · proc {resource.process_count}
+      {formatMemory(resource.memory_rss_bytes)} (RSS 합계) · proc {resource.process_count}
       {resource.children_count > 0 ? ` (${resource.children_count} child)` : ""}
+      {partialLabel}
     </span>
   );
 }

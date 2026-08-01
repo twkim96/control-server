@@ -77,6 +77,9 @@ def _reload_registry() -> None:
         except ConfigCheckpointError as exc:
             raise ConfigWriteError(str(exc)) from exc
         _registry().reload(new_cfg)
+        current_app.config["resource_sampler"].prune(
+            {service.id for service in new_cfg.services} | {"system:controller"}
+        )
         # 파일 브라우저는 controller.allowed_path_roots를 따른다.
         current_app.config["file_browser"] = FileBrowser(new_cfg.controller.allowed_path_roots)
 

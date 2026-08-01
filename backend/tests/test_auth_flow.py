@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 from textwrap import dedent
 
+import psutil
 import pytest
 
 # app.py가 backend 패키지를 sys.path 0번에 두는 conftest를 신뢰한다.
@@ -100,6 +101,11 @@ def test_login_then_get_services(client):
     assert resource["reason"] == "not_running"
     assert resource["cpu_percent"] is None
     assert resource["memory_rss_bytes"] is None
+    assert resource["partial"] is False
+    assert resource["discovered_process_count"] == 0
+    assert resource["sampled_process_count"] == 0
+    assert resource["skipped_process_count"] == 0
+    assert resource["window_seconds"] is None
 
 
 def test_mutation_requires_csrf(client):
@@ -114,6 +120,29 @@ def test_mutation_requires_csrf(client):
         headers={"X-CSRF-Token": "wrong"},
     )
     assert res.status_code == 403
+
+
+def test_config_reload_prunes_deleted_resource_cache(client):
+    from process_manager import RuntimeState
+
+    login = client.post("/api/auth/login", json={"password": "secret123"})
+    csrf = login.get_json()["csrf_token"]
+    sampler = client.application.config["resource_sampler"]
+    process = psutil.Process(os.getpid())
+    state = RuntimeState(pid=process.pid, create_time=process.create_time())
+    first = sampler.sample("deleted-service", state, include_children=False)
+    controller_first = sampler.sample("system:controller", state, include_children=False)
+
+    response = client.post(
+        "/api/config/reload",
+        headers={"X-CSRF-Token": csrf},
+    )
+
+    assert response.status_code == 200
+    second = sampler.sample("deleted-service", state, include_children=False)
+    controller_second = sampler.sample("system:controller", state, include_children=False)
+    assert second is not first
+    assert controller_second is controller_first
 
 
 def test_login_failure_leaves_unauthenticated(client):

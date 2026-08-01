@@ -98,6 +98,44 @@ curl -sS -b "$COOKIE_JAR" \
 | POST | `/api/config/reload` | 세션+CSRF | 디스크의 설정 다시 로드 |
 | GET | `/api/files` | 세션 | `path=<dir>` query로 허용된 루트 또는 디렉터리 조회 |
 
+#### 자동화/AI 서비스 등록 계약
+
+포트를 열고 계속 실행되는 서버는 `POST /api/config/services`로 Servers에 등록합니다.
+`POST /api/config/actions`는 실행 후 종료되는 update/deploy/sync 같은 일회성 명령용이며,
+장기 서버를 대신 등록하는 API가 아닙니다. 서비스 등록을 이유로 Control Server
+프런트엔드에 서비스별 탭·라우트·iframe을 추가하지 않습니다.
+
+서비스 설정 API의 생성·수정·삭제·정렬은 성공 시 config 저장, PM2 정의 reconcile,
+last-good checkpoint와 registry reload까지 수행합니다. 따라서 2xx 응답 뒤
+`POST /api/config/reload`를 추가 호출하지 않습니다. `/api/config/reload`는 YAML을 외부에서
+직접 수정한 경우에만 사용합니다.
+
+표준 action은 다음 ID와 라벨을 사용합니다. 서비스 이름을 접두사로 붙이거나 임의의
+동의어로 바꾸지 않습니다.
+
+| ID | type | label |
+| --- | --- | --- |
+| `start` | `process_start` | `시작` |
+| `stop` | `process_stop` | `중지` |
+| `restart` | `process_restart` | `재시작` |
+| `health` | `health_check` | `상태 확인` |
+| `logs` | `show_logs` | `로그` |
+| `open` | `open_url` | `URL 열기` |
+
+신규 등록의 권장 순서:
+
+1. `GET /api/config/services`로 ID와 포트 중복 확인
+2. `GET /api/auth/me`의 `csrf_token`을 `X-CSRF-Token`으로 설정
+3. `POST /api/config/services` 호출
+4. `GET /api/config/services`와 `GET /api/services/<id>`로 결과 확인
+5. 사용자가 실행까지 요청한 경우에만 `POST /api/services/<id>/actions/start` 호출
+
+`open_url`은 사용자 화면, `health.url`은 상태 판정 endpoint입니다. `command`는 shell
+문자열이 아닌 argv 배열이고, `cwd`는 허용 루트 안의 절대 경로여야 합니다. 별도 요청이
+없으면 `lifecycle.mode=manual`, `autostart=false`,
+`unmanaged_policy=status_only`를 사용합니다. PM2 backend의 stop strategy는
+`SIGINT` → `SIGTERM` → `SIGKILL` 계약을 유지합니다.
+
 ### Action Group 설정
 
 | 메서드 | 경로 | 보호 | 설명 |
@@ -268,7 +306,12 @@ PM2 운영 모드의 목록 조회는 한 번 이상 성공한 상태 snapshot�
     "cpu_percent": 1.2,
     "memory_rss_bytes": 55902208,
     "process_count": 3,
-    "children_count": 2
+    "children_count": 2,
+    "partial": false,
+    "discovered_process_count": 3,
+    "sampled_process_count": 3,
+    "skipped_process_count": 0,
+    "window_seconds": 10.1
   }
 }
 ```
@@ -287,6 +330,14 @@ PM2 운영 모드의 목록 조회는 한 번 이상 성공한 상태 snapshot�
 
 `resource.reason`은 `ok`, `not_running`, `pid_reused`, `access_denied`,
 `no_such_process` 중 하나입니다. CPU의 첫 샘플은 `null`일 수 있습니다.
+CPU는 `(pid, create_time)`별 누적 CPU 시간 차이를 `window_seconds` 구간으로 나눈
+부모·자식 프로세스 합계이며 멀티코어에서는 100%를 넘을 수 있습니다.
+
+`memory_rss_bytes`는 부모와 현재 발견된 모든 자식 프로세스의 RSS 합계입니다. 공유
+메모리 페이지가 프로세스별 RSS에 중복 포함될 수 있으므로 실제 고유 물리 메모리와는
+다릅니다. `partial=true`이면 일부 자식 열거 또는 측정이 실패한 값이며,
+`discovered_process_count`, `sampled_process_count`, `skipped_process_count`로 범위를
+확인할 수 있습니다.
 
 ### 입양 진단
 
