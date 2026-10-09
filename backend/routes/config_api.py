@@ -132,14 +132,14 @@ def create_service():
             with _process_manager().service_operation(payload["id"]):
                 upsert_service(_config_path(), payload, create_if_missing=True)
                 _reload_registry()
+            return jsonify({"ok": True, "service": _registry().service_to_meta(_registry().get(payload["id"]))})
+
     except ConfigError as exc:
         return jsonify({"error": "config_invalid", "message": str(exc)}), 400
     except ConfigWriteError as exc:
         return jsonify({"error": "config_write_failed", "message": str(exc)}), 400
     except ProcessError as exc:
         return jsonify({"error": "config_reload_blocked", "message": str(exc)}), 409
-
-    return jsonify({"ok": True, "service": _registry().service_to_meta(_registry().get(payload["id"]))})
 
 
 @bp.put("/config/services/<sid>")
@@ -160,14 +160,14 @@ def update_service(sid: str):
             with _process_manager().service_operation(sid):
                 upsert_service(_config_path(), payload, create_if_missing=False)
                 _reload_registry()
+            return jsonify({"ok": True, "service": _registry().service_to_meta(_registry().get(sid))})
+
     except ConfigError as exc:
         return jsonify({"error": "config_invalid", "message": str(exc)}), 400
     except ConfigWriteError as exc:
         return jsonify({"error": "config_write_failed", "message": str(exc)}), 400
     except ProcessError as exc:
         return jsonify({"error": "config_reload_blocked", "message": str(exc)}), 409
-
-    return jsonify({"ok": True, "service": _registry().service_to_meta(_registry().get(sid))})
 
 
 @bp.delete("/config/services/<sid>")
@@ -190,13 +190,14 @@ def remove_service(sid: str):
                 delete_service(_config_path(), sid)
                 _reload_registry()
                 pm.forget_service(sid)
+            return jsonify({"ok": True})
+
     except ConfigWriteError as exc:
         return jsonify({"error": "config_write_failed", "message": str(exc)}), 400
     except ConfigError as exc:
         return jsonify({"error": "config_invalid", "message": str(exc)}), 400
     except ProcessError as exc:
-        return jsonify({"error": "service_running", "message": str(exc)}), 409
-    return jsonify({"ok": True})
+        return jsonify({"error": "config_reload_blocked", "message": str(exc)}), 409
 
 
 @bp.post("/config/services/reorder")
@@ -210,13 +211,17 @@ def reorder_services_route():
     if not isinstance(order, list) or not all(isinstance(s, str) for s in order):
         return jsonify({"error": "invalid_order"}), 400
     try:
-        reorder_services(_config_path(), order)
-        _reload_registry()
+        with _config_reconcile_lock:
+            reorder_services(_config_path(), order)
+            _reload_registry()
+            return jsonify({"ok": True})
+
     except ConfigWriteError as exc:
         return jsonify({"error": "reorder_failed", "message": str(exc)}), 400
     except ConfigError as exc:
         return jsonify({"error": "config_invalid", "message": str(exc)}), 400
-    return jsonify({"ok": True})
+    except ProcessError as exc:
+        return jsonify({"error": "config_reload_blocked", "message": str(exc)}), 409
 
 
 @bp.post("/config/reload")
@@ -303,20 +308,24 @@ def create_action_group():
     if err is not None:
         return err
     try:
-        upsert_action_group(_config_path(), payload, create_if_missing=True)
-        _reload_registry()
+        with _config_reconcile_lock:
+            upsert_action_group(_config_path(), payload, create_if_missing=True)
+            _reload_registry()
+            return jsonify(
+                {
+                    "ok": True,
+                    "group": _registry().action_group_to_meta(
+                        _registry().get_action_group(payload["id"])
+                    ),
+                }
+            )
+
     except ConfigError as exc:
         return jsonify({"error": "config_invalid", "message": str(exc)}), 400
     except ConfigWriteError as exc:
         return jsonify({"error": "config_write_failed", "message": str(exc)}), 400
-    return jsonify(
-        {
-            "ok": True,
-            "group": _registry().action_group_to_meta(
-                _registry().get_action_group(payload["id"])
-            ),
-        }
-    )
+    except ProcessError as exc:
+        return jsonify({"error": "config_reload_blocked", "message": str(exc)}), 409
 
 
 @bp.put("/config/actions/<gid>")
@@ -335,18 +344,22 @@ def update_action_group(gid: str):
     if err is not None:
         return err
     try:
-        upsert_action_group(_config_path(), payload, create_if_missing=False)
-        _reload_registry()
+        with _config_reconcile_lock:
+            upsert_action_group(_config_path(), payload, create_if_missing=False)
+            _reload_registry()
+            return jsonify(
+                {
+                    "ok": True,
+                    "group": _registry().action_group_to_meta(_registry().get_action_group(gid)),
+                }
+            )
+
     except ConfigError as exc:
         return jsonify({"error": "config_invalid", "message": str(exc)}), 400
     except ConfigWriteError as exc:
         return jsonify({"error": "config_write_failed", "message": str(exc)}), 400
-    return jsonify(
-        {
-            "ok": True,
-            "group": _registry().action_group_to_meta(_registry().get_action_group(gid)),
-        }
-    )
+    except ProcessError as exc:
+        return jsonify({"error": "config_reload_blocked", "message": str(exc)}), 409
 
 
 @bp.delete("/config/actions/<gid>")
@@ -354,13 +367,17 @@ def update_action_group(gid: str):
 @csrf_required
 def remove_action_group(gid: str):
     try:
-        delete_action_group(_config_path(), gid)
-        _reload_registry()
+        with _config_reconcile_lock:
+            delete_action_group(_config_path(), gid)
+            _reload_registry()
+            return jsonify({"ok": True})
+
     except ConfigWriteError as exc:
         return jsonify({"error": "config_write_failed", "message": str(exc)}), 400
     except ConfigError as exc:
         return jsonify({"error": "config_invalid", "message": str(exc)}), 400
-    return jsonify({"ok": True})
+    except ProcessError as exc:
+        return jsonify({"error": "config_reload_blocked", "message": str(exc)}), 409
 
 
 @bp.post("/config/actions/reorder")
@@ -374,13 +391,17 @@ def reorder_action_groups_route():
     if not isinstance(order, list) or not all(isinstance(s, str) for s in order):
         return jsonify({"error": "invalid_order"}), 400
     try:
-        reorder_action_groups(_config_path(), order)
-        _reload_registry()
+        with _config_reconcile_lock:
+            reorder_action_groups(_config_path(), order)
+            _reload_registry()
+            return jsonify({"ok": True})
+
     except ConfigWriteError as exc:
         return jsonify({"error": "reorder_failed", "message": str(exc)}), 400
     except ConfigError as exc:
         return jsonify({"error": "config_invalid", "message": str(exc)}), 400
-    return jsonify({"ok": True})
+    except ProcessError as exc:
+        return jsonify({"error": "config_reload_blocked", "message": str(exc)}), 409
 
 
 # ----------------------------------------------------------------------

@@ -408,3 +408,36 @@ def test_kill_external_rejects_when_not_running_external(client):
     health 활성 + 응답 없음 케이스는 health_checker 단위 테스트에서 처리한다.
     """
     pass
+
+
+def test_login_cookie_has_intended_policy_and_ninety_day_lifetime(client):
+    from datetime import datetime, timedelta, timezone
+    from email.utils import parsedate_to_datetime
+    from http.cookies import SimpleCookie
+
+    before = datetime.now(timezone.utc)
+    response = client.post("/api/auth/login", json={"password": "secret123"})
+    after = datetime.now(timezone.utc)
+    cookie = SimpleCookie()
+    cookie.load(response.headers["Set-Cookie"])
+    assert set(cookie) == {"server_control_session"}
+    session_cookie = cookie["server_control_session"]
+    assert session_cookie["httponly"]
+    assert session_cookie["samesite"] == "Lax"
+    assert not session_cookie["secure"]
+    assert session_cookie["path"] == "/"
+    expires = parsedate_to_datetime(session_cookie["expires"])
+    assert before + timedelta(days=90, seconds=-1) <= expires <= after + timedelta(days=90)
+    assert client.application.permanent_session_lifetime == timedelta(days=90)
+
+
+def test_generic_session_cookie_cannot_authenticate_controller(client):
+    client.post("/api/auth/login", json={"password": "secret123"})
+    cookie = client.get_cookie("server_control_session")
+    assert cookie is not None
+    client.delete_cookie("server_control_session")
+    # Even a valid controller-signed session under the generic name is ignored.
+    client.set_cookie("session", cookie.value)
+    assert client.get("/api/auth/me").get_json() == {"authenticated": False}
+    client.set_cookie("server_control_session", cookie.value)
+    assert client.get("/api/auth/me").get_json()["authenticated"] is True

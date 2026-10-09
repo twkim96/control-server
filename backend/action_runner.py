@@ -152,7 +152,7 @@ class ActionRunner:
                 cwd=str(cwd) if cwd else None,
                 env=env,
                 stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
+                stdout=subprocess.PIPE if item.log.enabled else subprocess.DEVNULL,
                 stderr=subprocess.STDOUT,
                 bufsize=0,
                 start_new_session=True,
@@ -183,13 +183,7 @@ class ActionRunner:
             self._item_cache[run_id] = item
             queue = self._by_item.setdefault((group.id, item.id), [])
             queue.append(run_id)
-            # 메모리 상의 메타데이터 N개 제한 (오래된 run 제거; 디스크 .log는 별도 정책)
-            while len(queue) > self._max_runs_per_item:
-                old = queue.pop(0)
-                self._runs.pop(old, None)
-                self._popens.pop(old, None)
-                self._item_cache.pop(old, None)
-                self._waiters.pop(old, None)
+            self._prune_completed_locked(group.id, item.id)
 
         waiter = threading.Thread(
             target=self._wait_loop,
@@ -209,6 +203,21 @@ class ActionRunner:
             popen.pid,
         )
         return run
+
+    def _prune_completed_locked(self, group_id: str, item_id: str) -> None:
+        queue = self._by_item.get((group_id, item_id), [])
+        # cancelled is set before signals finish; only ended_at proves completion.
+        for old in list(queue):
+            if len(queue) <= self._max_runs_per_item:
+                break
+            run = self._runs.get(old)
+            if run is None or run.ended_at is None:
+                continue
+            queue.remove(old)
+            self._runs.pop(old, None)
+            self._popens.pop(old, None)
+            self._item_cache.pop(old, None)
+            self._waiters.pop(old, None)
 
     def _resolve_cwd(self, item: ActionItemConfig) -> str | None:
         if item.cwd:
@@ -230,7 +239,19 @@ class ActionRunner:
         with self._lock:
             item = self._item_cache.get(run_id)
         keep_runs = item.log.keep_runs if item is not None else 0
-        self._run_log.stop_capture(run_id, keep_runs=keep_runs)
+
+        def final_line() -> str:
+            with self._lock:
+                current = self._runs.get(run_id)
+                status = current.status if current is not None else RUN_STATUS_RUNNING
+                if status == RUN_STATUS_RUNNING:
+                    status = RUN_STATUS_SUCCEEDED if exit_code == 0 else RUN_STATUS_FAILED
+            return f"\n[exit_code={exit_code} status={status}]\n"
+
+        self._run_log.stop_capture(
+            run_id, keep_runs=keep_runs,
+            final_line=final_line if item is not None and item.log.enabled else None,
+        )
 
         with self._lock:
             run = self._runs.get(run_id)
@@ -244,11 +265,7 @@ class ActionRunner:
                 else:
                     run.status = RUN_STATUS_FAILED
 
-        # exit code 한 줄을 .log 끝에 남긴다. reader는 이미 join됐으므로
-        # 이 write가 마지막 데이터.
-        if item is not None and item.log.enabled and run is not None:
-            tail_msg = f"\n[exit_code={exit_code} status={run.status}]\n"
-            self._run_log.write_line(run_id, tail_msg)
+            self._prune_completed_locked(run.group_id, run.item_id)
 
         _log.info(
             "action ended: run_id=%s exit_code=%s status=%s",

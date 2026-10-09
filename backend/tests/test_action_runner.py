@@ -7,7 +7,9 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -73,11 +75,16 @@ def test_run_succeeds_and_captures_stdout(tmp_path: Path) -> None:
     rl = RunLogManager(tmp_path / "logs")
     runner = ActionRunner(rl)
 
-    item = _build_item(command=("echo", "hello world"))
+    finish = tmp_path / "finish"
+    script = _write_script(tmp_path,
+        "import pathlib, time\nprint('hello world', flush=True)\n"
+        f"while not pathlib.Path({str(finish)!r}).exists(): time.sleep(0.01)\n")
+    item = _build_item(command=(sys.executable, str(script)))
     group = _build_group(item)
 
     run = runner.start(group, item)
     assert run.status == RUN_STATUS_RUNNING
+    finish.touch()
     _wait_until_done(runner, run.run_id)
 
     final = runner.get_run(run.run_id)
@@ -216,6 +223,126 @@ def test_keep_runs_evicts_oldest(tmp_path: Path) -> None:
     log_dir = rl.item_dir(group.id, item.id)
     logs = sorted(log_dir.glob("*.log"))
     assert len(logs) == 2
+
+
+def test_disabled_log_does_not_block_large_output(tmp_path: Path) -> None:
+    runner = ActionRunner(RunLogManager(tmp_path / "logs"))
+    script = _write_script(tmp_path, "import os\nos.write(1, b'x' * 1048576)\n")
+    item = replace(
+        _build_item(command=(sys.executable, str(script))),
+        log=ActionRunLogConfig(enabled=False, keep_runs=2),
+    )
+    try:
+        run = runner.start(_build_group(item), item)
+        _wait_until_done(runner, run.run_id)
+        assert run.status == RUN_STATUS_SUCCEEDED
+        assert run.exit_code == 0
+        assert run.log_path is None
+    finally:
+        runner.shutdown()
+
+
+@pytest.mark.parametrize("cancelling", [False, True])
+def test_metadata_retention_preserves_unfinished_runs(tmp_path: Path, monkeypatch, cancelling) -> None:
+    runner = ActionRunner(RunLogManager(tmp_path / "logs"), max_runs_per_item=1)
+    script = _write_script(tmp_path, "import time\ntime.sleep(30)\n")
+    item = _build_item(command=(sys.executable, str(script)))
+    group = _build_group(item)
+    first = runner.start(group, item)
+    first_waiter = runner._waiters[first.run_id]
+    signal_entered = threading.Event()
+    release_signal = threading.Event()
+    cancel_thread = None
+    errors = []
+    original_killpg = os.killpg
+
+    def blocked_signal(pgid, sig):
+        signal_entered.set()
+        assert release_signal.wait(5)
+        original_killpg(pgid, sig)
+
+    def cancel_first():
+        try:
+            runner.cancel(first.run_id)
+        except Exception as exc:
+            errors.append(exc)
+
+    try:
+        if cancelling:
+            monkeypatch.setattr(os, "killpg", blocked_signal)
+            cancel_thread = threading.Thread(target=cancel_first)
+            cancel_thread.start()
+            assert signal_entered.wait(2)
+            assert first.status == RUN_STATUS_CANCELLED
+        quick = replace(item, command=("echo", "done"))
+        second = runner.start(group, quick)
+        deadline = time.monotonic() + 3
+        while second.ended_at is None and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert second.ended_at is not None
+        assert runner.get_run(first.run_id) is first
+        assert first.ended_at is None
+        assert first.run_id in runner._popens
+        # Finished history is bounded even while the older run remains active.
+        assert len(runner.list_runs(group.id, item.id)) == 1
+        release_signal.set()
+        if cancel_thread is not None:
+            cancel_thread.join(3)
+            assert not cancel_thread.is_alive()
+            assert not errors
+        else:
+            runner.cancel(first.run_id)
+        first_waiter.join(3)
+        assert not first_waiter.is_alive()
+        assert first.ended_at is not None
+        assert first.exit_code is not None
+    finally:
+        release_signal.set()
+        if cancel_thread is not None:
+            cancel_thread.join(3)
+        runner.shutdown()
+
+
+def test_log_retention_preserves_active_capture_and_bounds_completed(tmp_path: Path) -> None:
+    runner = ActionRunner(RunLogManager(tmp_path / "logs"))
+    release = tmp_path / "release"
+    script = _write_script(
+        tmp_path,
+        "import pathlib, sys, time\n"
+        "print('original output', flush=True)\n"
+        "while not pathlib.Path(sys.argv[1]).exists(): time.sleep(0.01)\n"
+        "print('final output', flush=True)\n",
+    )
+    item = _build_item(command=(sys.executable, str(script), str(release)), keep_runs=1)
+    group = _build_group(item)
+    try:
+        first = runner.start(group, item)
+        first_waiter = runner._waiters[first.run_id]
+        path = Path(first.log_path)
+        deadline = time.monotonic() + 3
+        while 'original output' not in path.read_text() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert 'original output' in path.read_text()
+        quick = replace(item, command=("echo", "quick"))
+        for _ in range(2):
+            other = runner.start(group, quick)
+            waiter = runner._waiters[other.run_id]
+            waiter.join(3)
+            assert not waiter.is_alive()
+            assert path.is_file()
+            assert 'original output' in path.read_text()
+            assert len(list(path.parent.glob('*.log'))) == 2
+        release.touch()
+        first_waiter.join(3)
+        assert not first_waiter.is_alive()
+        assert first.status == RUN_STATUS_SUCCEEDED
+        assert 'original output' in path.read_text()
+        assert 'final output' in path.read_text()
+        assert '[exit_code=0 status=succeeded]' in path.read_text()
+        assert len(list(path.parent.glob('*.log'))) == 1
+    finally:
+        release.touch()
+        runner.shutdown()
 
 
 def test_unsafe_command_rejected_at_runtime(tmp_path: Path) -> None:

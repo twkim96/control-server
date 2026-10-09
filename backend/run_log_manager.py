@@ -20,7 +20,7 @@ import threading
 import time
 from collections import deque
 from pathlib import Path
-from typing import IO, Iterator
+from typing import IO, Callable, Iterator
 
 
 class RunLogManager:
@@ -103,7 +103,10 @@ class RunLogManager:
             except Exception:  # noqa: BLE001
                 pass
 
-    def stop_capture(self, run_id: str, *, keep_runs: int = 0, join_timeout: float = 5.0) -> None:
+    def stop_capture(
+        self, run_id: str, *, keep_runs: int = 0, join_timeout: float = 5.0,
+        final_line: Callable[[], str] | None = None,
+    ) -> None:
         """run 종료 시 호출. 핸들을 닫고, 필요하면 오래된 .log를 정리한다.
 
         graceful drain:
@@ -121,10 +124,20 @@ class RunLogManager:
             # lock 밖에서 join. reader가 lock을 잠시 잡아 마지막 줄을 쓰는 시간을 확보.
             reader.join(timeout=join_timeout)
 
+        # Keep this file active until its footer is written. Other completions
+        # must not remove it between closing capture and appending the footer.
+        footer = final_line() if final_line is not None else None
         with self._lock:
+            fh = self._files.get(run_id)
+            if footer is not None and fh is not None and not fh.closed:
+                try:
+                    fh.write(footer)
+                except OSError:
+                    # Logging failure must not strand a completed action in running state.
+                    pass
             self._teardown_locked(run_id)
-        if scope is not None and keep_runs > 0:
-            self._enforce_keep_runs(scope[0], scope[1], keep_runs)
+            if scope is not None and keep_runs > 0:
+                self._enforce_keep_runs(scope[0], scope[1], keep_runs)
 
     def _teardown_locked(self, run_id: str) -> None:
         # self._lock을 잡은 채로 호출.
@@ -193,11 +206,20 @@ class RunLogManager:
     # ------------------------------------------------------------------
 
     def _enforce_keep_runs(self, group_id: str, item_id: str, keep_runs: int) -> None:
+        # Called with self._lock held, serializing capture setup and pruning.
         directory = self.item_dir(group_id, item_id)
         if not directory.is_dir():
             return
         try:
-            logs = [p for p in directory.iterdir() if p.is_file() and p.suffix == ".log"]
+            active = {
+                self.log_path(gid, iid, run_id)
+                for run_id, (gid, iid) in self._scopes.items()
+                if run_id in self._files
+            }
+            logs = [
+                p for p in directory.iterdir()
+                if p.is_file() and p.suffix == ".log" and p not in active
+            ]
         except OSError:
             return
         if len(logs) <= keep_runs:

@@ -55,11 +55,11 @@ def init_app(app: Flask, *, secret_key_path: str | os.PathLike[str]) -> None:
         app.secret_key = _ensure_secret_key(Path(secret_key_path))
 
     # 외부 포트는 열지 않는 운영 전제. dev에서는 https가 아니므로 secure는 끔.
-    app.config.setdefault("SESSION_COOKIE_HTTPONLY", True)
-    app.config.setdefault("SESSION_COOKIE_SAMESITE", "Lax")
-    app.config.setdefault("SESSION_COOKIE_SECURE", False)
-    app.config.setdefault("SESSION_COOKIE_NAME", "server_control_session")
-    app.config.setdefault("PERMANENT_SESSION_LIFETIME", 60 * 60 * 24 * 90)
+    app.config["SESSION_COOKIE_HTTPONLY"] = True
+    app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+    app.config["SESSION_COOKIE_SECURE"] = False
+    app.config["SESSION_COOKIE_NAME"] = "server_control_session"
+    app.config["PERMANENT_SESSION_LIFETIME"] = 60 * 60 * 24 * 90
 
 
 def _ensure_secret_key(path: Path) -> bytes:
