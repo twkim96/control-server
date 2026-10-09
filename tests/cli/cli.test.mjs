@@ -17,6 +17,9 @@ import {
 } from "../../lib/installer.mjs";
 import { assertSafeManagedHome, isWithin, resolveLayout } from "../../lib/layout.mjs";
 
+const releaseVersion = JSON.parse(fs.readFileSync(new URL("../../package.json", import.meta.url), "utf8")).version;
+const nextReleaseVersion = releaseVersion.replace(/\d+$/, (patch) => String(Number(patch) + 1));
+
 test("parseArgs accepts managed install options", () => {
   assert.deepEqual(parseArgs(["install", "--home", "/tmp/control", "--no-start"]), {
     command: "install",
@@ -156,7 +159,7 @@ test("no-start install creates one release and preserves private data on uninsta
   process.env.CONTROL_LAUNCHD_LABEL = `io.github.twkim96.control-server.first-failure.${process.pid}`;
   try {
     const installed = await installManaged({ homeDir: home, port: 19000, start: false });
-    assert.equal(installed.metadata.version, "1.5.2");
+    assert.equal(installed.metadata.version, releaseVersion);
     assert.equal(fs.existsSync(path.join(installed.layout.current, "backend", "app.py")), true);
     assert.equal(fs.existsSync(path.join(installed.layout.current, "backend", "tests")), false);
     assert.equal(fs.existsSync(path.join(installed.layout.current, "backend", "config.yml")), false);
@@ -170,7 +173,7 @@ test("no-start install creates one release and preserves private data on uninsta
     assert.equal(installed.layout.url, "http://127.0.0.1:19000");
 
     const inspection = await inspectInstallation(home);
-    assert.equal(inspection.metadata.version, "1.5.2");
+    assert.equal(inspection.metadata.version, releaseVersion);
     assert.equal(inspection.checks.find((check) => check.name === "frontend").ok, true);
     assert.equal(inspection.checks.find((check) => check.name === "environment permissions").ok, true);
 
@@ -287,7 +290,7 @@ test("re-running install restarts an existing managed installation", async () =>
     assert.equal(activationAction, "restart");
     assert.equal(
       JSON.parse(await fs.promises.readFile(resolveLayout(home).metadataPath, "utf8")).version,
-      "1.5.2",
+      releaseVersion,
     );
   } finally {
     if (previousSkip === undefined) delete process.env.CONTROL_SERVER_TEST_SKIP_DEPS;
@@ -301,7 +304,7 @@ test("re-running install restarts an existing managed installation", async () =>
 test("failed update restores current release and metadata", async () => {
   const parent = await fs.promises.mkdtemp("/private/tmp/cs-rollback-");
   const home = path.join(parent, "managed");
-  const source = path.join(parent, "source-1.5.3");
+  const source = path.join(parent, `source-${nextReleaseVersion}`);
   const previousSkip = process.env.CONTROL_SERVER_TEST_SKIP_DEPS;
   const previousLabel = process.env.CONTROL_LAUNCHD_LABEL;
   process.env.CONTROL_SERVER_TEST_SKIP_DEPS = "1";
@@ -314,7 +317,7 @@ test("failed update restores current release and metadata", async () => {
     await copyApplication(path.resolve(import.meta.dirname, "../.."), source);
     const packagePath = path.join(source, "package.json");
     const packagePayload = JSON.parse(await fs.promises.readFile(packagePath, "utf8"));
-    packagePayload.version = "1.5.3";
+    packagePayload.version = nextReleaseVersion;
     await fs.promises.writeFile(packagePath, `${JSON.stringify(packagePayload, null, 2)}\n`);
     let rollbackCalled = false;
 
@@ -335,9 +338,9 @@ test("failed update restores current release and metadata", async () => {
     );
 
     const layout = resolveLayout(home);
-    assert.equal(fs.readlinkSync(layout.current), path.join("releases", "1.5.2"));
-    assert.equal(JSON.parse(await fs.promises.readFile(layout.metadataPath, "utf8")).version, "1.5.2");
-    assert.equal(fs.existsSync(path.join(layout.releases, "1.5.3")), true);
+    assert.equal(fs.readlinkSync(layout.current), path.join("releases", releaseVersion));
+    assert.equal(JSON.parse(await fs.promises.readFile(layout.metadataPath, "utf8")).version, releaseVersion);
+    assert.equal(fs.existsSync(path.join(layout.releases, nextReleaseVersion)), true);
     assert.equal(rollbackCalled, true);
     assert.equal(await fs.promises.readFile(layout.configPath, "utf8"), configBefore);
   } finally {
@@ -352,7 +355,7 @@ test("failed update restores current release and metadata", async () => {
 test("explicit rollback selects a completed older release", async () => {
   const parent = await fs.promises.mkdtemp("/private/tmp/cs-explicit-rollback-");
   const home = path.join(parent, "managed");
-  const source = path.join(parent, "source-1.5.3");
+  const source = path.join(parent, `source-${nextReleaseVersion}`);
   const previousSkip = process.env.CONTROL_SERVER_TEST_SKIP_DEPS;
   const previousLabel = process.env.CONTROL_LAUNCHD_LABEL;
   process.env.CONTROL_SERVER_TEST_SKIP_DEPS = "1";
@@ -365,22 +368,22 @@ test("explicit rollback selects a completed older release", async () => {
     await copyApplication(path.resolve(import.meta.dirname, "../.."), source);
     const packagePath = path.join(source, "package.json");
     const payload = JSON.parse(await fs.promises.readFile(packagePath, "utf8"));
-    payload.version = "1.5.3";
+    payload.version = nextReleaseVersion;
     await fs.promises.writeFile(packagePath, `${JSON.stringify(payload, null, 2)}\n`);
     await installManaged({ homeDir: home, sourceRoot: source, start: false, mode: "update" });
 
     const result = await rollbackManaged({
       homeDir: home,
-      toVersion: "1.5.2",
+      toVersion: releaseVersion,
       activate: async () => {},
     });
-    assert.equal(result.fromVersion, "1.5.3");
-    assert.equal(result.toVersion, "1.5.2");
+    assert.equal(result.fromVersion, nextReleaseVersion);
+    assert.equal(result.toVersion, releaseVersion);
     const layout = resolveLayout(home);
-    assert.equal(fs.readlinkSync(layout.current), path.join("releases", "1.5.2"));
+    assert.equal(fs.readlinkSync(layout.current), path.join("releases", releaseVersion));
     assert.equal(
       JSON.parse(await fs.promises.readFile(layout.metadataPath, "utf8")).version,
-      "1.5.2",
+      releaseVersion,
     );
     assert.equal(await fs.promises.readFile(layout.configPath, "utf8"), configBefore);
   } finally {
