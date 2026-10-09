@@ -35,16 +35,13 @@ interface OpenExternalLogInfo {
 }
 
 export interface ServicesSectionProps {
-  // compact=true: Main 페이지 안에 끼워 넣을 때. 헤더 우측에 "모두 보기" 버튼 추가,
-  // 카드 그리드는 첫 N개만 보여준다.
+  // compact=true: Main 페이지의 헤더 스타일과 "모두 보기" 버튼을 사용한다.
+  // 카드 그리드는 모든 그룹을 보여준다.
   compact?: boolean;
-  // 메인 페이지에서 보여줄 최대 그룹 수. compact일 때만 의미 있음.
-  maxGroupsInCompact?: number;
 }
 
 export function ServicesSection({
   compact = false,
-  maxGroupsInCompact = 4,
 }: ServicesSectionProps) {
   const { data, error, refresh, loading } = useActions();
   const navigate = useNavigate();
@@ -73,8 +70,6 @@ export function ServicesSection({
   }, [rawIdKey]);
 
   const allGroups = orderById(rawGroups, optimisticGroupOrder);
-  const groups = compact ? allGroups.slice(0, maxGroupsInCompact) : allGroups;
-  const hiddenCount = compact ? Math.max(0, allGroups.length - groups.length) : 0;
 
   const handleAdd = () => {
     setEditing(null);
@@ -204,11 +199,9 @@ export function ServicesSection({
         </EmptyState>
       )}
 
-      {groups.length > 0 && (
+      {allGroups.length > 0 && (
         <div className={classes.groupGrid}>
-          {groups.map((group) => {
-            // compact 슬라이스 안에서도 전체 인덱스를 기준으로 순서 변경
-            const fullIndex = allGroups.findIndex((g) => g.id === group.id);
+          {allGroups.map((group, fullIndex) => {
             return (
               <ActionGroupCard
                 key={group.id}
@@ -248,18 +241,6 @@ export function ServicesSection({
               />
             );
           })}
-        </div>
-      )}
-
-      {compact && hiddenCount > 0 && (
-        <div
-          style={{
-            textAlign: "center",
-            color: "var(--text-muted)",
-            fontSize: "var(--font-sm)",
-          }}
-        >
-          + {hiddenCount}개 더 (모두 보기에서 확인)
         </div>
       )}
 
