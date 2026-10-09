@@ -251,3 +251,73 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+.pm2Section {
+  margin-top: var(--space-6);
+}
+
+.pm2Panel {
+  padding: var(--space-5);
+  gap: var(--space-3);
+}
+
+.pm2Versions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-3);
+  margin: 0;
+}
+
+.pm2Versions dt {
+  color: var(--text-muted);
+  font-size: var(--font-sm);
+}
+
+.pm2Versions dd {
+  margin: var(--space-1) 0 0;
+  font-size: var(--font-md);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.pm2Job {
+  padding: var(--space-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  font-size: var(--font-sm);
+  overflow-wrap: anywhere;
+}
+
+.pm2Job p {
+  margin-top: var(--space-1);
+}
+
+.pm2Error {
+  color: var(--danger, var(--text-primary));
+  font-size: var(--font-sm);
+  overflow-wrap: anywhere;
+}
+
+.pm2Buttons {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+@media (max-width: 640px) {
+  .pm2Versions {
+    grid-template-columns: 1fr;
+  }
+
+  .pm2Versions > div {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: var(--space-3);
+  }
+
+  .pm2Buttons {
+    flex-direction: column;
+  }
+}

@@ -6,6 +6,7 @@ import { Input } from "../../components/Input";
 import { useToast } from "../../components/useToast";
 import { reloadConfig } from "../../api/config";
 import { describeError } from "../../utils/errors";
+import { Pm2EngineSettings } from "./Pm2EngineSettings";
 import { HexColorInput } from "./HexColorInput";
 import {
   type AppearancePreset,
@@ -261,6 +262,8 @@ export function SettingsPage() {
           </div>
         </div>
       </section>
+
+      <Pm2EngineSettings />
 
       <SavePresetModal
         open={savePresetOpen}

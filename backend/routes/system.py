@@ -7,12 +7,39 @@ import os
 import psutil
 from flask import Blueprint, current_app, jsonify
 
-from auth import auth_required
+from auth import auth_required, csrf_required
+from pm2_engine import EngineError
 from process_manager import RuntimeState
 from python_finder import list_python_interpreters
 from resource_sampler import ResourceSampler
 
 bp = Blueprint("system_api", __name__, url_prefix="/api/system")
+
+
+@bp.get("/pm2")
+@auth_required
+def pm2_status():
+    return jsonify(current_app.config["pm2_engine"].status())
+
+
+@bp.post("/pm2/check")
+@auth_required
+@csrf_required
+def pm2_check():
+    try:
+        return jsonify(current_app.config["pm2_engine"].check())
+    except EngineError as exc:
+        return jsonify({"error": "pm2_check_failed", "message": str(exc)}), 503
+
+
+@bp.post("/pm2/update")
+@auth_required
+@csrf_required
+def pm2_update():
+    try:
+        return jsonify(current_app.config["pm2_engine"].start()), 202
+    except EngineError as exc:
+        return jsonify({"error": "pm2_update_unavailable", "message": str(exc)}), 409
 
 
 @bp.get("/python_interpreters")

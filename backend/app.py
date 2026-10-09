@@ -33,6 +33,7 @@ from health_checker import HealthChecker
 from log_manager import LogManager
 from process_manager import ProcessManager, RuntimeState
 from pm2_manager import Pm2Error, Pm2Manager
+from pm2_engine import Pm2Engine
 from resource_sampler import ResourceSampler
 from routes import actions as actions_routes
 from routes import appearance_api as appearance_api_routes
@@ -195,6 +196,7 @@ def create_app(
     app.config["run_log_manager"] = run_log_manager
     app.config["process_manager"] = process_manager
     app.config["process_backend"] = process_backend
+    app.config["pm2_engine"] = Pm2Engine(runtime_dir, REPO_ROOT, config_path, enabled=process_backend == "pm2")
     app.config["health_checker"] = health_checker
     app.config["file_browser"] = file_browser
     app.config["action_runner"] = action_runner
