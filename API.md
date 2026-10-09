@@ -16,6 +16,10 @@ Control Server의 JSON 및 SSE API 레퍼런스입니다. 현재 Flask 라우트
 - 쿠키 이름: `server_control_session`
 - 쿠키 속성: `HttpOnly`, `SameSite=Lax`, `Path=/`
 - 세션 수명: 90일
+- 로컬 HTTP 계약: `Secure=false`
+
+1.5.3은 위 값을 Flask 기본 설정에 명시적으로 적용합니다. 기존 `session` 쿠키는
+인증에 사용하지 않으므로 업데이트 후 한 번 재로그인이 필요합니다.
 - CSRF 헤더: `X-CSRF-Token`
 
 보호된 GET 및 SSE 요청에는 세션 쿠키가 필요합니다. 보호된 POST, PUT, DELETE 요청에는
@@ -75,6 +79,36 @@ curl -sS -b "$COOKIE_JAR" \
 | POST | `/api/auth/logout` | 없음 | 현재 세션 삭제 |
 | GET | `/api/auth/me` | 없음 | 현재 인증 상태와 CSRF 토큰 |
 
+### PM2 엔진 관리 (1.5.3)
+
+1.5.3의 기존 로컬·운영 검증 기록은 [CHANGELOG](CHANGELOG.md)에 있고,
+공개 릴리스 CI와 실제 구버전 수용의 남은 조건은 [TODO](docs/TODO.md)에서 관리합니다.
+
+| 메서드 | 경로 | 보호 | 설명 |
+| --- | --- | --- | --- |
+| GET | `/api/system/pm2` | 세션 | 현재 엔진·daemon·마지막 최신 확인 결과·작업 상태 |
+| POST | `/api/system/pm2/check` | 세션+CSRF | 최신 버전 확인 |
+| POST | `/api/system/pm2/update` | 세션+CSRF | 엔진 업데이트 또는 중단된 복구를 백그라운드로 시작 |
+
+요청 본문은 필요하지 않습니다. GET 자체는 최신 버전을 조회하지 않습니다. 설정 화면은
+상태 GET 뒤 check POST를 한 번 자동 호출하고, 확인 버튼으로 수동 갱신합니다. update POST는
+명시적 업데이트 버튼 클릭 시에만 호출합니다. 응답에는
+`supported`, `reason`, `current_version`, `daemon_version`, `latest_version`,
+`checked_at`, `update_available`, `job`이 포함됩니다. 확인되지 않은 버전·시각과 작업은
+`null`일 수 있습니다. `current_version`은 선택된 설치 버전이고 `daemon_version`은
+실제 실행 중인 daemon에서 확인한 버전으로, 두 값이 다를 수 있습니다.
+
+업데이트 시작 응답은 HTTP **202**이며 완료를 의미하지 않습니다. 같은 GET으로 `job`을
+다시 읽고 `status` (`running`, `succeeded`, `failed`), `phase`, `message`, 선택적
+`error`, `rolled_back`을 확인합니다. 작업 시작 불가·중복 작업은
+`pm2_update_unavailable`/409, 최신 확인 실패는 `pm2_check_failed`/503입니다.
+
+앱의 launchd 프로세스는 엔진 전환에 포함되지 않습니다. 관리 서비스는 잠시 재시작될 수
+있으며, 중지 상태 보존·실제 daemon 버전·전환 전 정상인 health 대상의 응답을 검증합니다.
+실패하면 복구를 시도합니다. `failed`와 `rolled_back=true`는 새 엔진 성공이 아니라 이전
+상태로 돌아갔다는 뜻입니다. 복구가 남아 있으면 update를 다시 요청하여 복구하고,
+복구 완료 뒤 필요하면 한 번 더 업데이트합니다.
+
 ### 서비스 런타임
 
 | 메서드 | 경로 | 보호 | 설명 |
@@ -106,7 +140,10 @@ curl -sS -b "$COOKIE_JAR" \
 프런트엔드에 서비스별 탭·라우트·iframe을 추가하지 않습니다.
 
 서비스 설정 API의 생성·수정·삭제·정렬은 성공 시 config 저장, PM2 정의 reconcile,
-last-good checkpoint와 registry reload까지 수행합니다. 따라서 2xx 응답 뒤
+last-good checkpoint와 registry reload까지 수행합니다. 서비스·ActionGroup의 모든 YAML
+변경은 저장부터 재적용·롤백·응답 구성까지 같은 잠금으로 직렬화합니다. 실행 중 정의
+변경 등으로 reconcile이 거부되면 `config_reload_blocked`와 HTTP 409를 반환합니다.
+따라서 2xx 응답 뒤
 `POST /api/config/reload`를 추가 호출하지 않습니다. `/api/config/reload`는 YAML을 외부에서
 직접 수정한 경우에만 사용합니다.
 
@@ -181,7 +218,7 @@ last-good checkpoint와 registry reload까지 수행합니다. 따라서 2xx 응
 ```json
 {
   "ok": true,
-  "version": "1.5.2",
+  "version": "1.5.3",
   "password_configured": true,
   "controller": {
     "host": "127.0.0.1",
@@ -329,20 +366,15 @@ PM2 운영 모드의 목록 조회는 한 번 이상 성공한 상태 snapshot�
 | `stopped` | 추적 PID와 외부 응답이 없음 |
 | `unknown` | 시작 이력이 없는 초기 상태 등 |
 
+측정 방식과 해석은 [리소스 사양](docs/SPEC/resources.md)에 있습니다.
+
 `resource.reason`은 `ok`, `not_running`, `pid_reused`, `access_denied`,
 `no_such_process` 중 하나입니다. CPU의 첫 샘플은 `null`일 수 있습니다.
-CPU는 `(pid, create_time)`별 누적 CPU 시간 차이를 `window_seconds` 구간으로 나눈
-부모·자식 프로세스 합계이며 멀티코어에서는 100%를 넘을 수 있습니다.
-
-`memory_rss_bytes`는 부모와 현재 발견된 모든 자식 프로세스의 RSS 합계입니다. 공유
-메모리 페이지가 프로세스별 RSS에 중복 포함될 수 있으므로 실제 고유 물리 메모리와는
-다릅니다. `partial=true`이면 일부 자식 열거 또는 측정이 실패한 값이며,
-`discovered_process_count`, `sampled_process_count`, `skipped_process_count`로 범위를
-확인할 수 있습니다.
 
 ### 입양 진단
 
-`running_external` 상세 응답에는 자동 입양 실패 이유가 포함될 수 있습니다.
+`running_external` 상세 응답에는 외부 인스턴스 안전 진단이 포함될 수 있습니다.
+PM2 모드는 자동 입양하지 않으며 검사에 통과한 외부 PID도 `pm2_exclusive`로 표시합니다.
 
 ```jsonc
 {
@@ -503,6 +535,8 @@ SSE는 GET 요청이므로 세션 쿠키만 사용합니다.
 `status`는 `running`, `succeeded`, `failed`, `cancelled` 중 하나입니다.
 
 ## 설정 변경 규칙
+
+정의·checkpoint·동시 저장의 사양은 [설정](docs/SPEC/configuration.md)에 있습니다.
 
 - 서비스 및 Action 설정 변경은 성공 후 registry를 자동으로 다시 로드합니다.
 - 실행 중인 서비스는 삭제할 수 없습니다.

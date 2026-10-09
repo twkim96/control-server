@@ -56,7 +56,7 @@ backend/_dup*.yml
 COMMIT_EDITMSG.txt
 
 # Local planning notes, release retrospectives, and machine-specific deploy tools
-phase.md
-todo.md
-update_*.md
+/phase.md
+/todo.md
+/update_*.md
 scripts/*_deploy.py

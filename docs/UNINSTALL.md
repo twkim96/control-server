@@ -1,24 +1,5 @@
 # Uninstalling
 
-The default uninstall stops the dedicated managed services and Control Server,
-unloads its LaunchAgent, and removes application releases. Config, logs and runtime are
-preserved for recovery or reinstall:
+현재 문서: [제거 안내](operations/uninstall.md).
 
-```bash
-npx --yes @twkim96/control-server@latest uninstall
-```
-
-For non-interactive use, add `--yes`.
-
-Complete deletion requires an explicit purge confirmation:
-
-```bash
-npx --yes @twkim96/control-server@latest uninstall --purge
-```
-
-`--purge` removes the managed home including service inventory, password, logs,
-checkpoints and PM2 state. It does not delete the projects or working directories of
-registered services.
-
-The uninstaller refuses to unload a same-named LaunchAgent owned by another installation
-path.
+공개 npm 1.5.2와 GitHub README의 이전 링크를 위한 안내 파일입니다.
