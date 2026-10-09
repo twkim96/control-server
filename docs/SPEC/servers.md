@@ -53,6 +53,10 @@ PID/create_time, holder, cmdline/cwd/health를 다시 확인하고 controller나
 직전 상태와 경고를 표시합니다. mutation은 stale snapshot만으로 성공 처리하지 않습니다.
 응답 필드와 상태값은 [HTTP API](../../API.md#서비스-데이터)에 정의합니다.
 
+메인과 Servers 목록의 `PORT / URL` 영역은 `open_url`이 있으면 클릭 또는 Enter·Space로
+해당 웹페이지를 새 탭에 바로 엽니다. 행 펼침 상태는 바꾸지 않으며 모바일 펼침 패널에도
+같은 바로 열기를 제공합니다. URL이 없으면 일반 정보로 표시합니다.
+
 URL 열기는 로컬 host로 설정된 주소를 원격 dashboard의 hostname에 맞춰 치환합니다.
 이미 지정한 외부 host는 유지합니다. 이 동작은 서비스의 listen 주소를 바꾸지 않으므로
 원격 접속을 허용할 대상 서비스가 접근 가능한 인터페이스에 listen해야 합니다.

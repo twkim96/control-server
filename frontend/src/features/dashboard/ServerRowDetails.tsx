@@ -21,6 +21,7 @@ import { openServiceUrl } from "../../utils/openServiceUrl";
 import { formatRelative, formatTime, formatUptime } from "../../utils/time";
 import { ExternalKillDialog } from "./ExternalKillDialog";
 import { StatusDot } from "./StatusDot";
+import { ServerUrlShortcut } from "./ServerUrlShortcut";
 import { getActionConfirmCopy, shouldConfirmAction } from "./actionConfirm";
 import classes from "./dashboard.module.css";
 
@@ -232,15 +233,17 @@ export function ServerRowDetails({ service, onMutated, onOpenLogs }: ServerRowDe
             )}
           </Detail>
           <Detail label="PORT / URL">
-            <span className={classes.detailValue}>
-              {formatPort(service.port)}
-              {service.open_url ? (
-                <span className={classes.detailValueMuted}>
-                  {" · "}
-                  {service.open_url.replace(/^https?:\/\//, "")}
-                </span>
-              ) : null}
-            </span>
+            <ServerUrlShortcut url={service.open_url} name={service.name}>
+              <span className={classes.detailValue}>
+                {formatPort(service.port)}
+                {service.open_url ? (
+                  <span className={classes.detailValueMuted}>
+                    {" · "}
+                    {service.open_url.replace(/^https?:\/\//, "")}
+                  </span>
+                ) : null}
+              </span>
+            </ServerUrlShortcut>
           </Detail>
           <Detail label="RUNTIME">
             <span className={classes.detailValue}>

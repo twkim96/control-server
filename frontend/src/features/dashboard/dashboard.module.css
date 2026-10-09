@@ -185,11 +185,26 @@
 }
 
 .cellPortMeta {
+  display: block;
   font-size: var(--font-sm);
   color: var(--text-muted);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.urlShortcut {
+  display: block;
+  width: 100%;
+  text-align: left;
+}
+
+.urlShortcut:hover .cellPortLine,
+.urlShortcut:hover .cellPortMeta,
+.urlShortcut:hover .detailValue,
+.urlShortcut:hover .detailValueMuted {
+  color: var(--accent-hover);
+  text-decoration: underline;
 }
 
 .cellRuntime {

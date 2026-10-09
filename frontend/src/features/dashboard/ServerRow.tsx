@@ -18,6 +18,7 @@ import {
 import { openServiceUrl } from "../../utils/openServiceUrl";
 import { formatRelative, formatUptime } from "../../utils/time";
 import { ServerRowDetails } from "./ServerRowDetails";
+import { ServerUrlShortcut } from "./ServerUrlShortcut";
 import { StatusDot } from "./StatusDot";
 import { getActionConfirmCopy, shouldConfirmAction } from "./actionConfirm";
 import classes from "./dashboard.module.css";
@@ -175,10 +176,12 @@ export function ServerRow({
         </div>
 
         <div className={classes.cellPort} data-mobile-label="PORT / URL">
-          <span className={classes.cellPortLine}>{formatPort(service.port)}</span>
-          <div className={classes.cellPortMeta}>
-            {service.open_url ? service.open_url.replace(/^https?:\/\//, "") : "—"}
-          </div>
+          <ServerUrlShortcut url={service.open_url} name={service.name}>
+            <span className={classes.cellPortLine}>{formatPort(service.port)}</span>
+            <span className={classes.cellPortMeta}>
+              {service.open_url ? service.open_url.replace(/^https?:\/\//, "") : "—"}
+            </span>
+          </ServerUrlShortcut>
         </div>
 
         <div className={classes.cellRuntime} data-mobile-label="RUNTIME">
