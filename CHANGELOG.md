@@ -35,6 +35,20 @@ Local automated and isolated PM2/browser checks are separate from managed deploy
 long-running operational acceptance. npm publication and release tags are not included in
 local managed deployment.
 
+### Managed acceptance (2026-10-22)
+
+- [arm64 and x64 CI](https://github.com/twkim96/control-server/actions/runs/39786593771)
+  passed for `f8a7a00`; the preceding feature commit is `b2c3176`
+- managed app updated from 1.5.3 to 1.6.0 with only the launchd controller restarted
+- all eight running PM2 services kept the same PIDs and normal responses; four stopped
+  entries remained stopped; the selected daemon and engine stayed at PM2 7.1.0
+- config/environment bytes, deployed application files and served frontend assets verified;
+  history API and installed CLI doctor passed
+- the existing `cos_web` manifest warning remains; no unrelated service definition was changed
+
+This is deployment acceptance with the new automation/rotation policies left disabled.
+Service-specific opt-in recovery/rotation and long-running browser acceptance remain pending.
+
 ## [1.5.3] - Unreleased
 
 Implementation and local macOS acceptance completed on 2026-09-06. The managed app

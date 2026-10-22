@@ -5,10 +5,6 @@
 
 ## 공개 릴리스와 Intel 수용
 
-- [ ] 현재 1.6.0 변경을 의도한 release commit으로 확정하고 arm64/x64 CI를 확인한다.
-  최신 확인된 [CI](https://github.com/twkim96/control-server/actions/runs/30686112712)는
-  `f6ad095`의 두 아키텍처 성공이며 이후 1.6.0 변경의 CI가 아니다.
-  완료 조건: 해당 1.6.0 commit의 CI와 패키지 검증 증거를 확보한다.
 - [ ] Intel 실제 장비에서 packed install/login/update/doctor/rollback/uninstall을 수용한다.
   x64 CI 성공으로 실기기 완료를 대신하지 않는다. 완료 조건: 데이터 보존과 daemon/
   LaunchAgent 정리까지 기록한다.
@@ -39,8 +35,9 @@
 ## 남은 운영·브라우저 수용
 
 - [ ] PM2 운영 기능(장애 이력, 서비스별 재시작 정책, health 자동 복구, 그룹·의존 순서,
-  실행 중 로그 회전/압축, 헬스로그 표시 필터)의 관리형 app 배포와 실제 브라우저·장기
-  운영 수용을 확인한다. 자동 검사와 격리 PM2 회전 결과는 운영 배포 완료가 아니다.
+  실행 중 로그 회전/압축, 헬스로그 표시 필터)의 실제 브라우저·서비스별 opt-in·장기
+  운영 수용을 확인한다. 1.6.0 관리형 배포와 PID/health 보존 결과는
+  [CHANGELOG](../CHANGELOG.md#managed-acceptance-2026-10-22)에 있으며 추가 수용과 구분한다.
   완료 조건: opt-in 정책을 선택한 서비스에서만 켜고, 수동 중지 보존·오류 로그 표시·
   회전 후 스트림·상태 갱신과 서비스 응답을 확인한다.
 
