@@ -19,6 +19,11 @@ the 1.5.0 public distribution release onward.
 - lightweight display-only filtering of successful configured health access logs, with a
   show toggle; errors and original stored logs are preserved
 
+### Fixed
+
+- supported macOS installations without `/usr/bin/lockf` use an inherited-descriptor
+  Python flock helper, preserving management and PM2 command exclusion
+
 ### Changed
 
 - runtime snapshots pass only required process fields to Python, omitting inherited environment

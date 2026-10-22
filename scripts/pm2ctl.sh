@@ -26,6 +26,18 @@ chmod 700 "$PM2_HOME_DIR"
 mkdir -p "$ENGINE_ROOT"
 chmod 700 "$ENGINE_ROOT"
 
+# lockf was added on newer macOS releases. The Python fallback locks the same
+# inherited open-file description; the shell keeps it locked after the helper exits.
+lock_fd() {
+  if [[ -x /usr/bin/lockf ]]; then
+    /usr/bin/lockf -s -t "$2" "$1"
+  else
+    local lock_python="${CONTROL_PYTHON:-$REPO_ROOT/.venv/bin/python}"
+    if [[ ! -x "$lock_python" ]]; then lock_python="$(command -v python3)"; fi
+    "$lock_python" "$REPO_ROOT/backend/file_lock.py" "$1" "$2"
+  fi
+}
+
 # A kernel lock excludes all ordinary clients during engine cutover. The updater
 # alone may bypass it with the private token written while holding the same lock.
 OWNER_TOKEN=""
@@ -38,7 +50,7 @@ if [[ -z "$OWNER_TOKEN" || "${CONTROL_PM2_ENGINE_TOKEN:-}" != "$OWNER_TOKEN" ]];
   # updater needs immediate rejection; otherwise a routine poll could block stop.
   MAINTENANCE_WAIT=10
   if [[ -n "$OWNER_TOKEN" ]]; then MAINTENANCE_WAIT=0; fi
-  if ! /usr/bin/lockf -s -t "$MAINTENANCE_WAIT" 8; then
+  if ! lock_fd 8 "$MAINTENANCE_WAIT"; then
     echo "[!] PM2 engine maintenance is in progress" >&2
     exit 75
   fi
@@ -63,7 +75,7 @@ export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/
 # Serialize CLI calls using a kernel lock, released even when the CLI is killed.
 PM2_CLI_LOCK="$PM2_HOME_DIR/server-control-cli.lock"
 exec 9>>"$PM2_CLI_LOCK"
-if ! /usr/bin/lockf -s -t 10 9; then
+if ! lock_fd 9 10; then
   echo "[!] PM2 CLI lock timed out: $PM2_CLI_LOCK" >&2
   exit 75
 fi

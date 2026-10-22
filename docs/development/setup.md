@@ -41,6 +41,14 @@ source 운영 controller나 관리형 설치가 이미 9000을 사용하면 별�
 log/runtime을 지정합니다. `.venv/bin/python backend/app.py --help`에서 해당 인자를 확인합니다.
 `CONTROL_PROCESS_BACKEND`는 예시 run.env에 PM2로 설정되어 있습니다.
 
+## macOS 잠금 호환
+
+새 macOS의 `/usr/bin/lockf`가 없는 환경에서는 `backend/file_lock.py`가 Python 표준
+`fcntl.flock`으로 상속된 descriptor를 잠급니다. 부모 shell/Node가 fd를 닫을 때 해제되어
+명령 종료·비정상 종료에도 잠금 파일을 삭제하지 않습니다. backend wrapper는 app venv,
+관리 CLI는 `CONTROL_PYTHON` 또는 PATH의 python3를 사용합니다. 잠금을 얻지 못하면
+기존과 같이 작업을 거부하며 잠금 없이 명령을 실행하지 않습니다.
+
 ## 변경에 맞는 검증
 
 ```bash
