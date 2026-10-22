@@ -159,3 +159,113 @@ def test_read_since_after_truncate(tmp_path: Path) -> None:
     assert lines == ["z"]
     assert new_offset == p.stat().st_size
 
+
+
+def test_live_rotation_keeps_open_writer_until_finalize(tmp_path: Path) -> None:
+    import gzip
+    lm = LogManager(tmp_path)
+    base = lm.log_path("svc")
+    base.write_text("before\n")
+    with base.open("a") as writer:
+        assert lm.prepare_live_rotation("svc", max_bytes=1)
+        writer.write("during\n")
+        writer.flush()
+        assert lm.pending_path("svc").read_text() == "before\nduring\n"
+    base.write_text("after\n")
+    lm.finish_live_rotation("svc", keep=2, compress=True)
+    assert base.read_text() == "after\n"
+    assert gzip.decompress((tmp_path / "svc.log.1.gz").read_bytes()) == b"before\nduring\n"
+    assert not lm.pending_path("svc").exists()
+
+
+def test_stream_follows_replacement_even_if_new_file_is_larger(tmp_path: Path) -> None:
+    import threading
+    lm = LogManager(tmp_path)
+    path = lm.log_path("svc")
+    path.write_text("old\n")
+    stop = threading.Event()
+    stream = lm.stream("svc", from_start=True, idle_sleep=0.001, stop_event=stop)
+    try:
+        assert next(stream) == "old"
+        lm.prepare_live_rotation("svc", max_bytes=1)
+        with lm.pending_path("svc").open("a") as writer:
+            writer.write("during\n")
+        path.write_text("new-much-longer-line\n")
+        lm.finish_live_rotation("svc", keep=1, compress=False)
+        assert next(stream) == "during"
+        assert next(stream) == "new-much-longer-line"
+    finally:
+        stop.set()
+        stream.close()
+
+
+def test_rotation_retention_shares_plain_and_compressed_archive_slots(tmp_path: Path) -> None:
+    import gzip
+    lm = LogManager(tmp_path)
+    for n, compress in enumerate((True, False, True, False)):
+        lm.log_path("svc").write_text(f"generation-{n}\n")
+        lm.prepare_live_rotation("svc", max_bytes=1)
+        lm.finish_live_rotation("svc", keep=2, compress=compress)
+    archives = sorted(p for p in tmp_path.glob("svc.log.*") if p.name.removeprefix("svc.log.").removesuffix(".gz").isdigit())
+    assert len(archives) == 2
+    contents = [gzip.decompress(p.read_bytes()).decode() if p.suffix == ".gz" else p.read_text() for p in archives]
+    assert sorted(contents) == ["generation-2\n", "generation-3\n"]
+
+
+def test_rotation_failure_retains_pending_source(tmp_path: Path, monkeypatch) -> None:
+    import pytest
+    import log_manager
+    lm = LogManager(tmp_path)
+    lm.log_path("svc").write_text("original\n")
+    lm.prepare_live_rotation("svc", max_bytes=1)
+    def fail(*_args, **_kwargs):
+        raise OSError("disk full")
+    monkeypatch.setattr(log_manager.gzip, "open", fail)
+    with pytest.raises(OSError):
+        lm.finish_live_rotation("svc", keep=1, compress=True)
+    assert lm.pending_path("svc").read_text() == "original\n"
+
+
+def test_stream_continues_after_handoff_when_compression_fails(tmp_path, monkeypatch):
+    import threading
+    import pytest
+    import log_manager
+    lm = LogManager(tmp_path)
+    lm.log_path("svc").write_text("before\n")
+    stream = lm.stream("svc", from_start=True, idle_sleep=0.001, stop_event=threading.Event())
+    try:
+        assert next(stream) == "before"
+        lm.prepare_live_rotation("svc", max_bytes=1)
+        lm.log_path("svc").write_text("new-output\n")
+        lm.mark_live_handoff("svc")
+        def fail(*_args, **_kwargs):
+            raise OSError("disk full")
+        monkeypatch.setattr(log_manager.gzip, "open", fail)
+        with pytest.raises(OSError):
+            lm.finish_live_rotation("svc", keep=2, compress=True)
+        assert next(stream) == "new-output"
+        assert lm.pending_path("svc").read_text() == "before\n"
+    finally:
+        stream.close()
+
+
+def test_stream_reports_gap_when_slow_reader_misses_a_generation(tmp_path):
+    import threading
+    lm = LogManager(tmp_path)
+    lm.log_path("svc").write_text("first\n")
+    stream = lm.stream("svc", from_start=True, idle_sleep=0.001, stop_event=threading.Event())
+    try:
+        assert next(stream) == "first"
+        lm.prepare_live_rotation("svc", max_bytes=1)
+        lm.mark_live_handoff("svc")
+        lm.finish_live_rotation("svc", keep=2, compress=False)
+        lm.log_path("svc").write_text("intermediate\n")
+        lm.prepare_live_rotation("svc", max_bytes=1)
+        lm.mark_live_handoff("svc")
+        lm.finish_live_rotation("svc", keep=2, compress=False)
+        lm.log_path("svc").write_text("latest\n")
+        assert "누락" in next(stream)
+        assert next(stream) == "latest"
+        assert (tmp_path / "svc.log.1").read_text() == "intermediate\n"
+    finally:
+        stream.close()

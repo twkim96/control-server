@@ -9,10 +9,10 @@
 
 | 변경 영역 | 문서 | 내용 |
 | --- | --- | --- |
-| 장기 실행 서버 | [Servers](SPEC/servers.md) | PM2 소유권, 시작·종료, 외부 프로세스, 상태와 URL 열기 |
+| 장기 실행 서버 | [Servers](SPEC/servers.md) | PM2 소유권, 시작·종료, 장애 이력·복구 정책, 그룹·의존성, URL 열기 |
 | 설정과 데이터 | [설정](SPEC/configuration.md) | YAML 편집, reload 보호, checkpoint, 경로 제한 |
 | 일회성 작업 | [Services](SPEC/actions.md) | Action Group, 실행·취소, 이력과 출력 보존 |
-| 로그 | [로그](SPEC/logs.md) | 서비스 회전, 실행별 보관, SSE와 화면 수명 |
+| 로그 | [로그](SPEC/logs.md) | 서비스 회전·압축, 헬스로그 표시, 실행별 보관, SSE |
 | 리소스 | [리소스 측정](SPEC/resources.md) | 부모·자식 CPU/RSS, 초기·부분 측정 |
 | 외형 | [외형 설정](SPEC/appearance.md) | 서버 저장, 브라우저 캐시, 색상 프리셋 |
 | 독립 엔진 | [PM2 엔진](SPEC/pm2-engine.md) | 명시적 업데이트, 상태 보존, recovery journal |

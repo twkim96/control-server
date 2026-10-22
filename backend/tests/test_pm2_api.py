@@ -466,3 +466,21 @@ def test_pm2_slow_cold_start_does_not_delay_control_server_or_list_api(
     lifecycle_thread.join(timeout=2)
     assert not lifecycle_thread.is_alive()
     assert fake.status == "online"
+
+
+def test_manual_action_records_history_and_keeps_stopped_pm2_metadata(tmp_path, monkeypatch):
+    monkeypatch.setenv(PASSWORD_ENV, "secret")
+    config = tmp_path / "config.yml"
+    _config(config, tmp_path)
+    fake = FakePm2()
+    app = backend_app.create_app(config_path=config, log_dir=tmp_path / "logs", runtime_dir=tmp_path / "runtime",
+        frontend_dist=tmp_path / "dist", process_backend="pm2", pm2_runner=fake)
+    client = app.test_client()
+    csrf = _login(client)
+    for action in ("start", "stop"):
+        result = client.post(f"/api/services/dummy/actions/{action}", headers={"X-CSRF-Token": csrf})
+        assert result.status_code == 200
+    assert result.json["service"]["runtime"]["supervision"]["pm2_status"] == "stopped"
+    history = client.get("/api/services/dummy/events").json
+    assert [event["type"] for event in history["events"]] == ["start", "stop"]
+    assert "do-not-leak" not in str(history)

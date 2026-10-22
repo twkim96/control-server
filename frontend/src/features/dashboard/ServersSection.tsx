@@ -15,6 +15,7 @@ import {
 } from "../../utils/reorder";
 import { DashboardToolbar, type StatusFilter } from "./DashboardToolbar";
 import { ServerTable } from "./ServerTable";
+import { ServiceGroupControls } from "./ServiceGroupControls";
 
 const ISSUE_STATES: ServiceStatePhase[] = ["unhealthy", "unknown"];
 
@@ -66,6 +67,16 @@ export function ServersSection({ showToolbar = true }: ServersSectionProps) {
       ).length,
     [list],
   );
+  const serviceGroups = useMemo(() => {
+    const grouped = new Map<string, ServiceMeta[]>();
+    for (const service of list) {
+      if (!service.group) continue;
+      const members = grouped.get(service.group) ?? [];
+      members.push(service);
+      grouped.set(service.group, members);
+    }
+    return [...grouped].map(([group, members]) => ({ group, members }));
+  }, [list]);
 
   const handleReorder = async (
     sourceId: string,
@@ -142,6 +153,20 @@ export function ServersSection({ showToolbar = true }: ServersSectionProps) {
         </div>
       )}
 
+      {serviceGroups.length > 0 && (
+        <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>
+          {serviceGroups.map(({ group, members }) => (
+            <ServiceGroupControls
+              key={group}
+              group={group}
+              services={members}
+              supported={services.data?.supervisor?.backend === "pm2"}
+              onMutated={() => void services.refresh()}
+            />
+          ))}
+        </div>
+      )}
+
       <ServerTable
         services={filtered}
         onMutated={() => services.refresh()}
@@ -191,6 +216,7 @@ export function ServersSection({ showToolbar = true }: ServersSectionProps) {
         open={!!logTarget}
         serviceId={logTarget?.id}
         serviceName={logTarget?.name}
+        healthUrl={logTarget?.health?.url}
         serviceAlive={
           logTarget
             ? list.find((s) => s.id === logTarget.id)?.runtime?.alive

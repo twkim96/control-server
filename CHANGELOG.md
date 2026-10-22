@@ -3,6 +3,33 @@
 All notable changes are documented here. The project follows semantic versioning from
 the 1.5.0 public distribution release onward.
 
+## [1.6.0] - Unreleased
+
+### Added
+
+- persistent, bounded service observations and explicit action history, with PM2 restart
+  counts distinguished from crash counts and observed times distinguished from exact exit times
+- per-service PM2 restart policies and optional memory-triggered restart
+- opt-in unhealthy recovery with fresh identity/health checks, durable cooldown/hourly budget,
+  and health-verified recovery completion
+- asynchronous service group actions and dependency ordering; stopped services stay stopped
+  during group restart, and intervening manual actions cancel queued intent
+- opt-in live PM2 7.1+ log rotation with fd handoff checks, gzip retention, failure-preserved
+  pending logs, and explicit SSE gaps when a slow reader misses retained generations
+- lightweight display-only filtering of successful configured health access logs, with a
+  show toggle; errors and original stored logs are preserved
+
+### Changed
+
+- runtime snapshots pass only required process fields to Python, omitting inherited environment
+- service editing preserves existing log retention and HTTP/TCP health settings
+- disabled PM2 service logging routes output to `/dev/null`; changing the output target
+  or restart policy requires the service to be stopped first
+
+Local automated and isolated PM2/browser checks are separate from managed deployment and
+long-running operational acceptance. npm publication and release tags are not included in
+local managed deployment.
+
 ## [1.5.3] - Unreleased
 
 Implementation and local macOS acceptance completed on 2026-09-06. The managed app

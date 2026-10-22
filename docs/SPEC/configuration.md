@@ -16,7 +16,8 @@
 
 ## reload 보호
 
-- 실행 중 서비스 삭제와 command/cwd/env/종료 계약 변경을 거부합니다.
+- 실행 중 서비스 삭제와 command/cwd/env/종료 계약·PM2 재시작 정책·로그 출력 대상 변경을
+  거부합니다.
 - 실패한 후보는 마지막 정상 YAML checkpoint로 디스크까지 복구합니다.
 - 성공한 후보를 checkpoint에 저장하고 registry·허용 경로·리소스 cache를 갱신합니다.
 - controller 재시작 시 private PM2 manifest와 정의를 대조합니다. 오래된 실행 정의는
@@ -25,6 +26,16 @@
 - `409 config_reload_blocked`를 controller 재시작으로 우회하지 않습니다.
 
 현재 응답과 오류 코드는 [HTTP API](../../API.md#설정-변경-규칙)를 참고합니다.
+
+## 복구·그룹·로그 정책
+
+서비스 편집의 고급 설정에서 `restart`, `recovery`, `group`, `depends_on`과 로그 보관
+정책을 설정합니다. 기존 YAML에 새 필드가 없어도 기존 동작을 유지하며, 편집 저장은
+기존 log enabled/크기/보관 수 및 HTTP/TCP health 형식을 유지합니다.
+정확한 기본값과 범위는 스키마/loader가 기준이고 실행 의미는
+[Servers](servers.md#장애-이력과-선택적-health-복구), 로그 옵션은
+[로그](logs.md#선택적-실행-중-회전)에 있습니다. 자동 health 복구와 실행 중 로그 회전은
+기본 비활성입니다. native backend에서 이 PM2 운영 기능이 제공된다고 가정하지 않습니다.
 
 ## 경로와 환경
 

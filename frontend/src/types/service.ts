@@ -63,6 +63,25 @@ export interface LogMeta {
   tail_lines: number;
   max_bytes: number;
   keep: number;
+  rotate_while_running?: boolean;
+  compress?: boolean;
+}
+
+export interface RestartMeta {
+  autorestart: boolean;
+  min_uptime_seconds: number;
+  max_restarts: number;
+  restart_delay_ms: number;
+  exp_backoff_restart_delay_ms: number;
+  max_memory_restart_mb: number;
+}
+
+export interface RecoveryMeta {
+  enabled: boolean;
+  failure_threshold: number;
+  startup_grace_seconds: number;
+  cooldown_seconds: number;
+  max_restarts_per_hour: number;
 }
 
 export interface LifecycleMeta {
@@ -153,6 +172,10 @@ export interface RuntimeInfo {
   last_exit_code: number | null;
   last_exit_time: number | null;
   resource: RuntimeResource;
+  supervision?: {
+    restart_count: number;
+    pm2_status: string | null;
+  };
   // running_external 상태의 상세(GET /api/services/<id>) 응답에만 포함.
   adopt_diagnostics?: AdoptDiagnostics;
 }
@@ -172,6 +195,10 @@ export interface ServiceMeta {
   open_url: string | null;
   https: HttpsMeta;
   health: HealthMeta;
+  restart?: RestartMeta;
+  recovery?: RecoveryMeta;
+  group?: string;
+  depends_on?: string[];
   log: LogMeta;
   lifecycle: LifecycleMeta;
   actions: ActionMeta[];
@@ -180,7 +207,7 @@ export interface ServiceMeta {
 }
 
 export interface SupervisorDiagnostics {
-  backend: "pm2";
+  backend: string;
   degraded: boolean;
   refreshing: boolean;
   snapshot_age_seconds: number | null;
@@ -192,6 +219,41 @@ export interface SupervisorDiagnostics {
 export interface ServicesResponse {
   services: ServiceMeta[];
   supervisor?: SupervisorDiagnostics;
+}
+
+export interface ServiceEvent {
+  id: string;
+  at: number;
+  type: string;
+  message: string;
+  exit_code?: number;
+  restart_count?: number;
+}
+
+export interface ServiceEventsResponse {
+  events: ServiceEvent[];
+  restart_count: number;
+  last_exit_code: number | null;
+  last_exit_time: number | null;
+}
+
+export type ServiceGroupAction = "start" | "stop" | "restart";
+
+export interface ServiceGroupOperationJob {
+  id: string;
+  status: "queued" | "running" | "succeeded" | "failed";
+  action: ServiceGroupAction;
+  group: string;
+  results: Array<{
+    service_id: string;
+    status: string;
+    message?: string;
+  }>;
+  error?: string;
+}
+
+export interface ServiceGroupJobResponse {
+  job: ServiceGroupOperationJob;
 }
 
 export interface ActionResponse {

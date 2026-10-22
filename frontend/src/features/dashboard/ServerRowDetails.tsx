@@ -1,11 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { Button } from "../../components/Button";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { useToast } from "../../components/useToast";
 import { useAction } from "../../hooks/useAction";
-import { getService, killExternal } from "../../api/services";
-import type { ActionMeta, ActionType, AdoptDiagnostics, ServiceMeta } from "../../types/service";
+import { getService, getServiceEvents, killExternal } from "../../api/services";
+import type { ActionMeta, ActionType, AdoptDiagnostics, ServiceEventsResponse, ServiceMeta } from "../../types/service";
 import { describeError } from "../../utils/errors";
 import {
   formatCommand,
@@ -39,6 +39,18 @@ const PRIMARY_ACTION_ORDER: ActionType[] = [
   "open_url",
 ];
 
+const EVENT_LABELS: Record<string, string> = {
+  start: "시작 요청",
+  stop: "중지 요청",
+  restart: "재시작 요청",
+  online_observed: "PM2 온라인 상태 관측",
+  stopped_observed: "PM2 중지 상태 관측",
+  restart_observed: "재시작 감지 (원인 미상)",
+  recovery_requested: "헬스 실패 복구 요청",
+  recovery_succeeded: "헬스 실패 복구 완료",
+  recovery_failed: "헬스 실패 복구 실패",
+};
+
 export function ServerRowDetails({ service, onMutated, onOpenLogs }: ServerRowDetailsProps) {
   const { pendingActionId, run } = useAction();
   const toast = useToast();
@@ -47,6 +59,9 @@ export function ServerRowDetails({ service, onMutated, onOpenLogs }: ServerRowDe
   const [killing, setKilling] = useState(false);
   const [adoptDiagnostics, setAdoptDiagnostics] = useState<AdoptDiagnostics | undefined>();
   const [diagnosticsError, setDiagnosticsError] = useState<string | undefined>();
+  const [events, setEvents] = useState<ServiceEventsResponse>();
+  const [eventsError, setEventsError] = useState<string>();
+  const [eventsLoading, setEventsLoading] = useState(false);
 
   const isExternal = service.runtime?.state === "running_external";
   const externalPid = service.runtime?.unmanaged_pid ?? null;
@@ -67,6 +82,32 @@ export function ServerRowDetails({ service, onMutated, onOpenLogs }: ServerRowDe
       cancelled = true;
     };
   }, [isExternal, service.id]);
+
+  const refreshEvents = useCallback(async () => {
+    setEventsLoading(true);
+    setEventsError(undefined);
+    try {
+      setEvents(await getServiceEvents(service.id));
+    } catch (err) {
+      setEventsError(describeError(err));
+    } finally {
+      setEventsLoading(false);
+    }
+  }, [service.id]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void getServiceEvents(service.id)
+      .then((response) => {
+        if (!cancelled) setEvents(response);
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) setEventsError(describeError(err));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [service.id]);
 
   const enabledActions = useMemo(
     () => service.actions.filter((a) => a.enabled),
@@ -252,6 +293,14 @@ export function ServerRowDetails({ service, onMutated, onOpenLogs }: ServerRowDe
                 {" · "}pid {formatPid(service.runtime?.pid)}
               </span>
             </span>
+            {service.runtime?.supervision && (
+              <span className={classes.detailValueMuted}>
+                PM2 재시작 {service.runtime.supervision.restart_count}
+                {service.runtime.supervision.pm2_status
+                  ? ` · ${service.runtime.supervision.pm2_status}`
+                  : ""}
+              </span>
+            )}
             <ResourceLine service={service} />
           </Detail>
           <Detail label="ENTRY">
@@ -285,6 +334,43 @@ export function ServerRowDetails({ service, onMutated, onOpenLogs }: ServerRowDe
             </Detail>
           )}
         </div>
+        <section className={classes.serviceHistory} aria-label="서비스 실행 이력">
+          <header>
+            <strong>
+              실행 이력{
+                service.runtime?.supervision || events
+                  ? ` · PM2 재시작 ${service.runtime?.supervision?.restart_count ?? events?.restart_count ?? 0}회`
+                  : ""
+              }
+            </strong>
+            <Button size="sm" variant="ghost" onClick={() => void refreshEvents()} loading={eventsLoading}>
+              새로고침
+            </Button>
+          </header>
+          <div className={classes.detailValueMuted}>
+            표시 시각은 상태를 관측한 시간이며 실제 종료 시각과 다를 수 있습니다.
+          </div>
+          {eventsError ? (
+            <div className={classes.detailValueMuted} role="alert">이력을 불러오지 못했습니다: {eventsError}</div>
+          ) : !events ? (
+            <div className={classes.detailValueMuted}>이력 확인 중…</div>
+          ) : events.events.length === 0 ? (
+            <div className={classes.detailValueMuted}>기록된 실행 이력이 없습니다.</div>
+          ) : (
+            <ul>
+              {events.events.slice().reverse().map((event) => (
+                <li key={event.id}>
+                  <time dateTime={new Date(event.at * 1000).toISOString()}>
+                    관측 {formatTime(event.at)}
+                  </time>
+                  <span>{EVENT_LABELS[event.type] ?? event.message}</span>
+                  {event.exit_code !== undefined && <span>exit {formatExitCode(event.exit_code)}</span>}
+                  {event.restart_count !== undefined && <span>재시작 {event.restart_count}</span>}
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
       </div>
 
       {confirm && (

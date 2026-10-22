@@ -1,10 +1,11 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { tailLogs } from "../../api/services";
 import { Button } from "../../components/Button";
 import { IconButton } from "../../components/IconButton";
 import { useLogStream } from "../../hooks/useLogStream";
-import { LogTerminal } from "./LogTerminal";
+import { LogTerminal, type LogTerminalLine } from "./LogTerminal";
+import { filterHealthLogLines } from "./healthLogFilter";
 import classes from "./logs.module.css";
 
 export interface LogDrawerProps {
@@ -12,6 +13,7 @@ export interface LogDrawerProps {
   serviceId: string | undefined;
   serviceName: string | undefined;
   serviceAlive?: boolean;
+  healthUrl?: string | null;
   onClose: () => void;
 }
 
@@ -26,6 +28,7 @@ function LogDrawerInner({
   serviceId,
   serviceName,
   serviceAlive,
+  healthUrl,
   onClose,
 }: LogDrawerProps) {
   const shouldStream = serviceAlive === true;
@@ -79,6 +82,12 @@ function LogDrawerInner({
   const staticLines =
     matchingStaticLog && !matchingStaticLog.error ? matchingStaticLog.lines : [];
   const staticError = matchingStaticLog?.error;
+  const [showHealth, setShowHealth] = useState(false);
+  const sourceLines = shouldStream ? stream.lines : staticLines;
+  const visibleLines = useMemo(
+    () => filterHealthLogLines<LogTerminalLine>(sourceLines, healthUrl ?? undefined, showHealth),
+    [sourceLines, healthUrl, showHealth],
+  );
 
   const dotClass =
     status === "streaming"
@@ -127,7 +136,20 @@ function LogDrawerInner({
           </div>
         </div>
         <div className={classes.drawerBody}>
-          <LogTerminal lines={shouldStream ? stream.lines : staticLines} />
+          {healthUrl && (
+            <div className={classes.logFilterBar}>
+              <label>
+                <input
+                  type="checkbox"
+                  checked={showHealth}
+                  onChange={(event) => setShowHealth(event.target.checked)}
+                />
+                헬스체크 표시
+              </label>
+              {!showHealth && <span>화면에서만 숨김 · 원본 로그 파일은 그대로 유지됩니다.</span>}
+            </div>
+          )}
+          <LogTerminal lines={visibleLines} />
         </div>
       </div>
     </div>

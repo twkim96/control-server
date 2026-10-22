@@ -4,6 +4,9 @@ import type {
   LogTailResponse,
   ServicesResponse,
   ServiceMeta,
+  ServiceEventsResponse,
+  ServiceGroupAction,
+  ServiceGroupJobResponse,
 } from "../types/service";
 
 export function listServices(): Promise<ServicesResponse> {
@@ -12,6 +15,30 @@ export function listServices(): Promise<ServicesResponse> {
 
 export function getService(id: string): Promise<ServiceMeta> {
   return apiFetch<ServiceMeta>(`/api/services/${encodeURIComponent(id)}`);
+}
+
+export function getServiceEvents(id: string): Promise<ServiceEventsResponse> {
+  return apiFetch<ServiceEventsResponse>(
+    `/api/services/${encodeURIComponent(id)}/events`,
+  );
+}
+
+export function startServiceGroupAction(
+  group: string,
+  action: ServiceGroupAction,
+): Promise<ServiceGroupJobResponse> {
+  return apiFetch<ServiceGroupJobResponse>(
+    `/api/service-groups/${encodeURIComponent(group)}/actions/${action}`,
+    { method: "POST" },
+  );
+}
+
+export function getServiceGroupOperationJob(
+  jobId: string,
+): Promise<ServiceGroupJobResponse> {
+  return apiFetch<ServiceGroupJobResponse>(
+    `/api/service-operations/jobs/${encodeURIComponent(jobId)}`,
+  );
 }
 
 export function triggerAction(

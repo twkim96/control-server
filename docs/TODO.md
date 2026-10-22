@@ -3,17 +3,17 @@
 기존 계획에서 남은 작업과 검증만 관리합니다. 문서 초기화는 아래 제품 작업·서비스
 조작·공개 게시를 실행한 것이 아닙니다. 과거의 완료 체크박스는 활성 작업으로 복제하지 않습니다.
 
-## 1.5.3 공개 릴리스와 Intel 수용
+## 공개 릴리스와 Intel 수용
 
-- [ ] 현재 1.5.3 변경을 의도한 release commit으로 확정하고 arm64/x64 CI를 확인한다.
+- [ ] 현재 1.6.0 변경을 의도한 release commit으로 확정하고 arm64/x64 CI를 확인한다.
   최신 확인된 [CI](https://github.com/twkim96/control-server/actions/runs/30686112712)는
-  `f6ad095`의 두 아키텍처 성공이며 미커밋 1.5.3 변경의 CI가 아니다.
-  완료 조건: 해당 1.5.3 commit의 CI와 패키지 검증 증거를 확보한다.
+  `f6ad095`의 두 아키텍처 성공이며 이후 1.6.0 변경의 CI가 아니다.
+  완료 조건: 해당 1.6.0 commit의 CI와 패키지 검증 증거를 확보한다.
 - [ ] Intel 실제 장비에서 packed install/login/update/doctor/rollback/uninstall을 수용한다.
   x64 CI 성공으로 실기기 완료를 대신하지 않는다. 완료 조건: 데이터 보존과 daemon/
   LaunchAgent 정리까지 기록한다.
 - [ ] 승인된 release에서 npm 게시·tag·GitHub Release·remote 정합성을 마무리한다.
-  2026-10-06 조회 기준 npm `latest`/`next`는 모두 1.5.2이며 1.5.3은 공개 대기다.
+  2026-10-06 조회 기준 npm `latest`/`next`는 모두 1.5.2이며 1.5.3은 당시 공개 대기였으며 현재 로컬 기능 버전은 1.6.0이다.
   [릴리스 절차](operations/releasing.md)에 따라 정확한 패키지/commit을 검증한 뒤 진행한다.
 - [ ] 1.5.0 기록에서 보류한 `v1.5.0` Git tag/GitHub Release의 작성 여부를 결정한다.
   2026-10-06 로컬 tag/공개 Release 조회에는 없다. 이전 npm 공개 베타 게시 완료와
@@ -37,6 +37,12 @@
   거부 후보 중 필요한 정책을 결정하고 실제 로그 관측으로 확인한다.
 
 ## 남은 운영·브라우저 수용
+
+- [ ] PM2 운영 기능(장애 이력, 서비스별 재시작 정책, health 자동 복구, 그룹·의존 순서,
+  실행 중 로그 회전/압축, 헬스로그 표시 필터)의 관리형 app 배포와 실제 브라우저·장기
+  운영 수용을 확인한다. 자동 검사와 격리 PM2 회전 결과는 운영 배포 완료가 아니다.
+  완료 조건: opt-in 정책을 선택한 서비스에서만 켜고, 수동 중지 보존·오류 로그 표시·
+  회전 후 스트림·상태 갱신과 서비스 응답을 확인한다.
 
 - [ ] 고속 Action/서비스 로그에서 batch append, 스크롤, CPU, 연결 수를 관측한다.
   stopped 서비스는 실제 Network에서 SSE가 남지 않고, 완료 Action은 tail 반복/metadata
@@ -71,7 +77,7 @@
 - [ ] 기존 로그 최적화 후에도 idle CPU·로그 파일·다수 SSE가 실제 병목 또는 운영 허용
   크기 초과로 관측될 때만 추가 부하 상한을 검토한다. 기존 1.3.1/1.3.4 보류 후보는
   read_since chunk, 파일 부재 bounded wait, SSE 연결 수, virtualization,
-  실행 중 회전 운영안, polling 간격, stopped health 생략, backoff, Waitress thread,
+  polling 간격, stopped health 생략, backoff, Waitress thread,
   HTTP→TCP 전환, port-holder scan UX이다. 코드에는 health TTL/single-flight·공유 worker와
   진단 backoff가 이미 있고 PM2 mode에는 자동 입양이 없어 endpoint 분리 후보는 대체됐다.
   완료 조건: 재현된 병목에 맞는 후보만 선택하고 반응성·복구·로그 누락 영향을 수용한다.

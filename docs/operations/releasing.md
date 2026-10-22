@@ -46,10 +46,10 @@ npm publish --access public --tag next
 ```
 
 After candidate acceptance and approval, promote the exact verified version. For the
-current 1.5.3 candidate, this command applies only after that version is published:
+current 1.6.0 candidate, this command applies only after that version is published:
 
 ```bash
-npm dist-tag add @twkim96/control-server@1.5.3 latest
+npm dist-tag add @twkim96/control-server@1.6.0 latest
 ```
 
 Create the matching Git tag and GitHub Release from the verified commit and attach

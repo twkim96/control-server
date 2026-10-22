@@ -57,6 +57,27 @@ class LogConfig:
     tail_lines: int
     max_bytes: int  # 단일 로그 파일의 최대 크기 (회전 임계). 0이면 회전 안 함
     keep: int  # 회전 후 보관할 과거 파일 수. 0 또는 1 이상
+    rotate_while_running: bool = False
+    compress: bool = False
+
+
+@dataclass(frozen=True)
+class RestartConfig:
+    autorestart: bool = True
+    min_uptime_seconds: float = 5.0
+    max_restarts: int = 5
+    restart_delay_ms: int = 1000
+    exp_backoff_restart_delay_ms: int = 100
+    max_memory_restart_mb: int = 0
+
+
+@dataclass(frozen=True)
+class RecoveryConfig:
+    enabled: bool = False
+    failure_threshold: int = 3
+    startup_grace_seconds: float = 30.0
+    cooldown_seconds: float = 300.0
+    max_restarts_per_hour: int = 3
 
 
 @dataclass(frozen=True)
@@ -104,6 +125,10 @@ class ServiceConfig:
     https: HttpsConfig = field(default_factory=_default_https_config)
     adopt_command: tuple[str, ...] | None = None
     adopt_match: str = "exact"
+    restart: RestartConfig = field(default_factory=RestartConfig)
+    recovery: RecoveryConfig = field(default_factory=RecoveryConfig)
+    group: str = ""
+    depends_on: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -158,6 +183,8 @@ __all__ = [
     "HealthConfig",
     "HttpsConfig",
     "LogConfig",
+    "RestartConfig",
+    "RecoveryConfig",
     "LifecycleConfig",
     "StopStrategy",
     "ActionConfig",

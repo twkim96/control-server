@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import argparse
+import atexit
 import json
 import logging
 import os
@@ -41,9 +42,11 @@ from routes import api as api_routes
 from routes import auth_api as auth_api_routes
 from routes import config_api as config_api_routes
 from routes import pages as pages_routes
+from routes import operations as operations_routes
 from routes import system as system_routes
 from run_log_manager import RunLogManager
 from service_registry import ServiceRegistry
+from service_operations import ServiceOperations
 
 
 BACKEND_DIR = Path(__file__).resolve().parent
@@ -198,6 +201,9 @@ def create_app(
     app.config["process_backend"] = process_backend
     app.config["pm2_engine"] = Pm2Engine(runtime_dir, REPO_ROOT, config_path, enabled=process_backend == "pm2")
     app.config["health_checker"] = health_checker
+    service_operations = ServiceOperations(registry, process_manager, health_checker, runtime_dir)
+    app.config["service_operations"] = service_operations
+    app.config["shutdown_service_operations"] = service_operations.shutdown
     app.config["file_browser"] = file_browser
     app.config["action_runner"] = action_runner
     app.config["resource_sampler"] = resource_sampler
@@ -211,6 +217,7 @@ def create_app(
     app.register_blueprint(actions_routes.bp)
     app.register_blueprint(appearance_api_routes.bp)
     app.register_blueprint(system_routes.bp)
+    app.register_blueprint(operations_routes.bp)
     app.register_blueprint(pages_routes.bp)
 
     @app.errorhandler(Pm2Error)
@@ -235,12 +242,13 @@ def create_app(
     if run_autostart:
         lifecycle_thread = threading.Thread(
             target=_run_startup_lifecycle,
-            args=(registry, process_manager),
+            args=(registry, process_manager, service_operations),
             name="control-startup-lifecycle",
             daemon=True,
         )
         lifecycle_thread.start()
         app.config["startup_lifecycle_thread"] = lifecycle_thread
+        atexit.register(service_operations.shutdown)
 
     return app
 
@@ -248,6 +256,7 @@ def create_app(
 def _run_startup_lifecycle(
     registry: ServiceRegistry,
     process_manager: ProcessManager,
+    service_operations: ServiceOperations | None = None,
 ) -> None:
     """Run service reconciliation without delaying the Control Server listener."""
 
@@ -261,9 +270,15 @@ def _run_startup_lifecycle(
                 log.warning("background PM2 orphan reconciliation failed: %s", exc)
         if getattr(process_manager, "supports_adoption", True):
             _run_adopt_pass(registry, process_manager)
-        _run_autostart(registry, process_manager)
+        if service_operations is not None and service_operations.supported:
+            service_operations.autostart()
+        else:
+            _run_autostart(registry, process_manager)
     except Exception as exc:  # noqa: BLE001
         log.warning("background startup lifecycle failed: %s", exc)
+    finally:
+        if service_operations is not None:
+            service_operations.start()
 
 
 def _run_adopt_pass(registry: ServiceRegistry, process_manager: ProcessManager) -> None:
@@ -371,13 +386,16 @@ def main(argv: list[str] | None = None) -> int:
             PASSWORD_ENV,
         )
 
-    if args.server == "flask":
-        app.run(host=host, port=port, threaded=True, use_reloader=False)
-    else:
-        from waitress import serve
+    try:
+        if args.server == "flask":
+            app.run(host=host, port=port, threaded=True, use_reloader=False)
+        else:
+            from waitress import serve
 
-        # SSE 연결이 long-lived이라 thread를 오래 잡는다. 여유를 둔다.
-        serve(app, host=host, port=port, threads=32, channel_timeout=60)
+            # SSE 연결이 long-lived이라 thread를 오래 잡는다. 여유를 둔다.
+            serve(app, host=host, port=port, threads=32, channel_timeout=60)
+    finally:
+        app.config["service_operations"].shutdown()
     return 0
 
 

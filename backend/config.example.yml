@@ -13,6 +13,25 @@ controller:
     password_env: "CONTROL_PASSWORD"
 
 # Services can also be registered from the web UI.
+# Optional per-service supervision and grouping fields use these defaults:
+#   group: ""
+#   depends_on: []
+#   restart:
+#     autorestart: true
+#     min_uptime_seconds: 5.0
+#     max_restarts: 5
+#     restart_delay_ms: 1000
+#     exp_backoff_restart_delay_ms: 100
+#     max_memory_restart_mb: 0  # 0 disables memory-triggered restart (root PID)
+#   recovery:
+#     enabled: false
+#     failure_threshold: 3
+#     startup_grace_seconds: 30.0
+#     cooldown_seconds: 300.0
+#     max_restarts_per_hour: 3
+#   log:
+#     rotate_while_running: false
+#     compress: false
 services: []
 
 # One-shot action groups are optional.

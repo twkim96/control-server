@@ -34,6 +34,15 @@ for a custom home. After rollback, `current` selects the older CLI; retain a ver
 1.5.3 distribution outside the selected release when its management protections are
 needed for further recovery.
 
+## Local 1.6.0 deployment
+
+The 1.6.0 feature bundle uses its own release directory, retaining installed 1.5.3 as
+an app rollback target. The managed updater restarts only the launchd controller;
+it does not restart or update the independent PM2 daemon. Already-online services
+remain online. Normal startup still honors configured autostart, so compare both
+running/stopped intent and PIDs before/after deployment. New recovery and live log
+rotation policies default off. This is separate from npm publication.
+
 ## Application updates
 
 For an installation intentionally targeting the currently published **1.5.2**, the

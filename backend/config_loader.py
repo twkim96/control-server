@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 import re
 from pathlib import Path
@@ -88,6 +89,8 @@ from config_schema import (  # noqa: E402
     HttpsConfig,
     LifecycleConfig,
     LogConfig,
+    RecoveryConfig,
+    RestartConfig,
     ServiceConfig,
     StopStrategy,
     _default_https_config,
@@ -171,7 +174,9 @@ def _parse_services(node: Any) -> tuple[ServiceConfig, ...]:
         seen_ids.add(service.id)
         services.append(service)
 
-    return tuple(services)
+    result = tuple(services)
+    _validate_service_dependencies(result)
+    return result
 
 
 def _parse_service(node: Any, index: int) -> ServiceConfig:
@@ -244,6 +249,22 @@ def _parse_service(node: Any, index: int) -> ServiceConfig:
     https = _parse_https(node.get("https"), where)
     health = _parse_health(node.get("health"), where)
     log = _parse_log(node.get("log"), where)
+    restart = _parse_restart(node.get("restart"), where)
+    recovery = _parse_recovery(node.get("recovery"), where)
+    if recovery.enabled and not health.enabled:
+        raise ConfigError(f"{where}.recovery.enabled는 health.enabled=true일 때만 허용됩니다.")
+    group = node.get("group", "")
+    if not isinstance(group, str):
+        raise ConfigError(f"{where}.group는 문자열이어야 합니다.")
+    if len(group) > 80 or "/" in group or any(ord(c) < 32 for c in group) or group != group.strip():
+        raise ConfigError(f"{where}.group는 앞뒤 공백과 /, 제어문자가 없는 80자 이하 이름이어야 합니다.")
+    depends_node = node.get("depends_on", [])
+    if not isinstance(depends_node, list) or not all(
+        isinstance(dep, str) and dep for dep in depends_node
+    ):
+        raise ConfigError(f"{where}.depends_on은 비어있지 않은 서비스 ID 문자열 리스트여야 합니다.")
+    if len(set(depends_node)) != len(depends_node):
+        raise ConfigError(f"{where}.depends_on에 중복 참조가 있습니다.")
     lifecycle = _parse_lifecycle(node.get("lifecycle"), where)
     actions = _parse_actions(node.get("actions"), where)
 
@@ -265,7 +286,140 @@ def _parse_service(node: Any, index: int) -> ServiceConfig:
         https=https,
         adopt_command=adopt_command,
         adopt_match=adopt_match,
+        restart=restart,
+        recovery=recovery,
+        group=group,
+        depends_on=tuple(depends_node),
     )
+
+
+def _parse_restart(node: Any, where: str) -> RestartConfig:
+    if node is None:
+        return RestartConfig()
+    if not isinstance(node, dict):
+        raise ConfigError(f"{where}.restart는 mapping이어야 합니다.")
+    autorestart = _strict_bool(node.get("autorestart", True), f"{where}.restart.autorestart")
+    min_uptime = _finite_float(
+        node.get("min_uptime_seconds", 5.0), f"{where}.restart.min_uptime_seconds"
+    )
+    max_restarts = _strict_int(node.get("max_restarts", 5), f"{where}.restart.max_restarts")
+    restart_delay = _strict_int(
+        node.get("restart_delay_ms", 1000), f"{where}.restart.restart_delay_ms"
+    )
+    exp_backoff = _strict_int(
+        node.get("exp_backoff_restart_delay_ms", 100),
+        f"{where}.restart.exp_backoff_restart_delay_ms",
+    )
+    max_memory = _strict_int(
+        node.get("max_memory_restart_mb", 0), f"{where}.restart.max_memory_restart_mb"
+    )
+    if min_uptime <= 0:
+        raise ConfigError(f"{where}.restart.min_uptime_seconds는 0보다 커야 합니다.")
+    if max_restarts < 1:
+        raise ConfigError(f"{where}.restart.max_restarts는 1 이상이어야 합니다.")
+    for field_name, value in (
+        ("restart_delay_ms", restart_delay),
+        ("exp_backoff_restart_delay_ms", exp_backoff),
+        ("max_memory_restart_mb", max_memory),
+    ):
+        if value < 0:
+            raise ConfigError(f"{where}.restart.{field_name}는 0 이상이어야 합니다.")
+    return RestartConfig(
+        autorestart,
+        min_uptime,
+        max_restarts,
+        restart_delay,
+        exp_backoff,
+        max_memory,
+    )
+
+
+def _parse_recovery(node: Any, where: str) -> RecoveryConfig:
+    if node is None:
+        return RecoveryConfig()
+    if not isinstance(node, dict):
+        raise ConfigError(f"{where}.recovery는 mapping이어야 합니다.")
+    enabled = _strict_bool(node.get("enabled", False), f"{where}.recovery.enabled")
+    failure_threshold = _strict_int(
+        node.get("failure_threshold", 3), f"{where}.recovery.failure_threshold"
+    )
+    startup_grace = _finite_float(
+        node.get("startup_grace_seconds", 30.0), f"{where}.recovery.startup_grace_seconds"
+    )
+    cooldown = _finite_float(
+        node.get("cooldown_seconds", 300.0), f"{where}.recovery.cooldown_seconds"
+    )
+    restarts_per_hour = _strict_int(
+        node.get("max_restarts_per_hour", 3), f"{where}.recovery.max_restarts_per_hour"
+    )
+    if failure_threshold < 1:
+        raise ConfigError(f"{where}.recovery.failure_threshold는 1 이상이어야 합니다.")
+    if startup_grace < 0:
+        raise ConfigError(f"{where}.recovery.startup_grace_seconds는 0 이상이어야 합니다.")
+    if cooldown < 0:
+        raise ConfigError(f"{where}.recovery.cooldown_seconds는 0 이상이어야 합니다.")
+    if not 1 <= restarts_per_hour <= 100:
+        raise ConfigError(f"{where}.recovery.max_restarts_per_hour는 1..100 범위여야 합니다.")
+    return RecoveryConfig(
+        enabled,
+        failure_threshold,
+        startup_grace,
+        cooldown,
+        restarts_per_hour,
+    )
+
+
+def _strict_bool(value: Any, where: str) -> bool:
+    if not isinstance(value, bool):
+        raise ConfigError(f"{where}는 boolean이어야 합니다.")
+    return value
+
+
+def _strict_int(value: Any, where: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise ConfigError(f"{where}는 정수여야 합니다.")
+    return value
+
+
+def _finite_float(value: Any, where: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ConfigError(f"{where}는 유한한 숫자여야 합니다.")
+    try:
+        result = float(value)
+    except (OverflowError, ValueError) as exc:
+        raise ConfigError(f"{where}는 유한한 숫자여야 합니다.") from exc
+    if not math.isfinite(result):
+        raise ConfigError(f"{where}는 유한한 숫자여야 합니다.")
+    return result
+
+
+def _validate_service_dependencies(services: tuple[ServiceConfig, ...]) -> None:
+    by_id = {service.id: service for service in services}
+    for service in services:
+        for dependency in service.depends_on:
+            if dependency == service.id:
+                raise ConfigError(f"서비스 {service.id!r}는 자기 자신에 의존할 수 없습니다.")
+            if dependency not in by_id:
+                raise ConfigError(
+                    f"서비스 {service.id!r}의 알 수 없는 depends_on 참조: {dependency!r}"
+                )
+
+    visiting: set[str] = set()
+    visited: set[str] = set()
+
+    def visit(service_id: str) -> None:
+        if service_id in visiting:
+            raise ConfigError(f"서비스 depends_on 순환 참조: {service_id!r}")
+        if service_id in visited:
+            return
+        visiting.add(service_id)
+        for dependency in by_id[service_id].depends_on:
+            visit(dependency)
+        visiting.remove(service_id)
+        visited.add(service_id)
+
+    for service_id in by_id:
+        visit(service_id)
 
 
 def _parse_https(node: Any, where: str) -> HttpsConfig:
@@ -388,7 +542,12 @@ def _env_name(value: Any, default: str, where: str) -> str:
 
 def _parse_log(node: Any, where: str) -> LogConfig:
     if node is None:
-        return LogConfig(enabled=True, tail_lines=200, max_bytes=5 * 1024 * 1024, keep=3)
+        return LogConfig(
+            enabled=True,
+            tail_lines=200,
+            max_bytes=5 * 1024 * 1024,
+            keep=3,
+        )
     if not isinstance(node, dict):
         raise ConfigError(f"{where}.log는 mapping이어야 합니다.")
     enabled = bool(node.get("enabled", True))
@@ -401,7 +560,18 @@ def _parse_log(node: Any, where: str) -> LogConfig:
     keep = int(node.get("keep", 3))
     if keep < 0:
         raise ConfigError(f"{where}.log.keep는 0 이상이어야 합니다.")
-    return LogConfig(enabled=enabled, tail_lines=tail_lines, max_bytes=max_bytes, keep=keep)
+    rotate_while_running = _strict_bool(
+        node.get("rotate_while_running", False), f"{where}.log.rotate_while_running"
+    )
+    compress = _strict_bool(node.get("compress", False), f"{where}.log.compress")
+    return LogConfig(
+        enabled=enabled,
+        tail_lines=tail_lines,
+        max_bytes=max_bytes,
+        keep=keep,
+        rotate_while_running=rotate_while_running,
+        compress=compress,
+    )
 
 
 def _parse_lifecycle(node: Any, where: str) -> LifecycleConfig:

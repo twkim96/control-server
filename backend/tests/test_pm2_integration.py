@@ -315,3 +315,51 @@ def test_real_pm2_stop_delivers_sigterm_fallback_to_child(tmp_path: Path) -> Non
             check=False,
         )
         shutil.rmtree(pm2_runtime, ignore_errors=True)
+
+
+def test_real_pm2_live_log_rotation_preserves_pid_and_output(tmp_path: Path, monkeypatch) -> None:
+    import gzip
+    # Use the selected engine for compatibility with its 7.1 log flush fixes,
+    # but always run against a separate, short PM2_HOME.
+    selected = Path.home() / ".control-server/runtime/pm2-engine/current/node_modules/pm2/bin/pm2"
+    if not selected.exists():
+        pytest.skip("PM2 7.1 selected engine needed for live rotation acceptance")
+    version = __import__("json").loads((selected.resolve().parent.parent / "package.json").read_text())["version"]
+    if tuple(map(int, version.split(".")[:3])) < (7, 1, 0):
+        pytest.skip("PM2 >=7.1 required")
+    monkeypatch.setenv("CONTROL_PM2_ENGINE_CLI", str(selected))
+    (tmp_path / "writer.py").write_text(
+        "import time,signal,sys\nsignal.signal(signal.SIGINT, lambda *_: sys.exit(0))\nfor i in range(1000):\n print(f'line-{i}', flush=True)\n time.sleep(0.03)\n"
+    )
+    service = replace(_service(tmp_path, _free_port()), command=(sys.executable, "-u", "writer.py"), port=None)
+    service = replace(service, log=replace(service.log, max_bytes=30, keep=2, compress=True, rotate_while_running=True))
+    wrapper = Path(__file__).resolve().parents[2] / "scripts/pm2ctl.sh"
+    runtime = Path(tempfile.mkdtemp(prefix="sc-live-", dir="/private/tmp"))
+    manager = Pm2Manager(runtime, tmp_path / "logs", wrapper=wrapper)
+    manager.activate_service(service)
+    try:
+        before = manager.start(service)
+        path = manager._log.log_path(service.id)
+        deadline = time.monotonic() + 8
+        while time.monotonic() < deadline and (not path.exists() or path.stat().st_size < 30):
+            time.sleep(0.03)
+        assert manager.rotate_running_logs((service,)) == 1
+        time.sleep(0.2)
+        after = manager.get_process(service.id, force=True)
+        assert after.pid == before.pid
+        manager.stop(service, service.actions[0].stop_strategy)
+        pieces = []
+        for archived in sorted(path.parent.glob(f"{service.id}.log.*")):
+            if archived.suffix == ".gz":
+                pieces.append(gzip.decompress(archived.read_bytes()).decode())
+            elif archived.suffix[1:].isdigit():
+                pieces.append(archived.read_text())
+        if path.exists():
+            pieces.append(path.read_text())
+        numbers = sorted(int(line.removeprefix("line-")) for text in pieces for line in text.splitlines())
+        assert numbers and numbers == list(range(numbers[-1] + 1))
+    finally:
+        env = {**os.environ, "CONTROL_PM2_HOME": str(runtime / "pm2")}
+        result = subprocess.run([str(wrapper), "kill"], env=env, capture_output=True, timeout=20)
+        assert result.returncode == 0
+        shutil.rmtree(runtime)

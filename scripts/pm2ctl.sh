@@ -68,6 +68,18 @@ if ! /usr/bin/lockf -s -t 10 9; then
   exit 75
 fi
 
+if [[ "${1:-}" == "__rotate_logs" ]]; then
+  PYTHON_BIN="${CONTROL_PYTHON:-$REPO_ROOT/.venv/bin/python}"
+  exec "$PYTHON_BIN" "$REPO_ROOT/backend/pm2_log_rotation.py" "$NODE_BIN" "$REPO_ROOT/lib/pm2-probe.mjs" "$PM2_CLI" "$PM2_HOME_DIR" "$2" "$3"
+fi
+
+if [[ "${1:-}" == "__runtime_snapshot" ]]; then
+  if [[ "$OSTYPE" == darwin* && -x /usr/sbin/taskpolicy ]]; then
+    exec /usr/sbin/taskpolicy -a "$NODE_BIN" "$REPO_ROOT/lib/pm2-probe.mjs" "$PM2_CLI" runtime
+  fi
+  exec "$NODE_BIN" "$REPO_ROOT/lib/pm2-probe.mjs" "$PM2_CLI" runtime
+fi
+
 if [[ "${1:-}" == "__engine_snapshot" ]]; then
   exec "$NODE_BIN" "$REPO_ROOT/lib/pm2-probe.mjs" "$PM2_CLI"
 fi

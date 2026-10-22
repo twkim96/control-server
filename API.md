@@ -117,8 +117,30 @@ curl -sS -b "$COOKIE_JAR" \
 | GET | `/api/services/<sid>` | 세션 | 서비스 상세 및 입양 진단 |
 | POST | `/api/services/<sid>/actions/<aid>` | 세션+CSRF | 서비스 액션 실행 |
 | POST | `/api/services/<sid>/kill_external` | 세션+CSRF | 확인된 외부 인스턴스 종료 |
+| GET | `/api/services/<sid>/events` | 세션 | 최근 관측·명시적 작업 이력과 재시작 횟수 |
 | GET | `/api/services/<sid>/logs` | 세션 | 로그 tail 또는 offset 이후 조회 |
 | GET | `/api/services/<sid>/logs/stream` | 세션 | 서비스 로그 SSE |
+
+### PM2 서비스 그룹
+
+| 메서드 | 경로 | 보호 | 설명 |
+| --- | --- | --- | --- |
+| POST | `/api/service-groups/<group>/actions/<action>` | 세션+CSRF | `start`/`stop`/`restart` 비동기 요청 |
+| GET | `/api/service-operations/jobs/<id>` | 세션 | 그룹 작업 상태 조회 |
+
+POST body는 생략하거나 `{}`입니다. 성공 접수는 202이며 응답은
+`{"job":{"id":"...","status":"queued","action":"start","group":"...","results":[]}}`입니다.
+상태는 `queued`, `running`, `succeeded`, `failed`이고 결과 항목은
+`{service_id,status,message?}`, job 전체 실패 사유는 선택적 `error`입니다.
+서비스 결과는 `succeeded`, `failed`, `blocked`, `skipped`로 구분합니다.
+알 수 없는 group/job은 404, 동시 작업·선행 미준비·정의 변경·엔진 점검은 409입니다.
+native backend는 409 `pm2_required`, `supported:false`입니다. 작업은 controller 재시작 후
+재개되지 않으며 상태 조회가 서비스 시작/재시작을 수행하지 않습니다.
+
+`GET /api/services/<sid>/events`는 최근 최대 100개 events와 `restart_count`,
+`last_exit_code`, `last_exit_time`을 반환합니다. event는 `{id,at,type,message}`와 선택적
+`exit_code`/`restart_count`입니다. at/last_exit_time은 초 단위 Unix 관측 시각이며 PM2
+재시작 횟수를 crash 횟수로 해석하지 않습니다. env/command/로그 원문은 포함하지 않습니다.
 
 ### 서비스 설정
 
@@ -311,6 +333,11 @@ PM2 운영 모드의 목록 조회는 한 번 이상 성공한 상태 snapshot�
 정확한 클라이언트 타입은 `frontend/src/types/config.ts`와
 `frontend/src/types/service.ts`를 참고하세요.
 
+ServiceMeta에는 선택적 `group`/`depends_on`과 `restart`/`recovery` 정책, log의
+`rotate_while_running`/`compress`가 포함됩니다. 기본값과 실행 계약은
+[Servers](docs/SPEC/servers.md), [설정](docs/SPEC/configuration.md),
+[로그](docs/SPEC/logs.md)를 따릅니다.
+
 ### RuntimeInfo
 
 ```jsonc
@@ -442,6 +469,10 @@ PM2 모드는 자동 입양하지 않으며 검사에 통과한 외부 PID도 `p
   "service": {}
 }
 ```
+
+PM2 runtime은 선택적 `supervision: {restart_count, pm2_status}`를 제공합니다.
+수치는 공유 snapshot 기준입니다. UI의 헬스로그 숨기기는 원본 로그 API 응답/저장을
+변경하지 않습니다.
 
 ## 로그와 SSE
 

@@ -94,6 +94,14 @@ def _build_service_payload(
                 resource_state,
             ).to_dict(),
         }
+        supervision_state = resource_state
+        if current_app.config.get("process_backend") == "pm2" and "pm2_status" not in supervision_state.extra:
+            supervision_state = _process_manager().get_state_readonly(service.id)
+        if "pm2_status" in supervision_state.extra:
+            payload["runtime"]["supervision"] = {
+                "restart_count": supervision_state.extra.get("pm2_restart_count", 0),
+                "pm2_status": supervision_state.extra["pm2_status"],
+            }
         # running_external = 포트는 살아있는데 컨트롤 서버가 추적/입양하지 못한 상태.
         # 왜 자동 입양이 안 됐는지 사유를 실어 보낸다 (상세/펼침 뷰에서만 계산).
         if include_diagnostics and result.state == "running_external":
@@ -170,6 +178,12 @@ def get_service(sid: str):
 @auth_required
 @csrf_required
 def trigger_action(sid: str, aid: str):
+    from routes.config_api import _config_reconcile_lock
+    with _config_reconcile_lock:
+        return _trigger_action_locked(sid, aid)
+
+
+def _trigger_action_locked(sid: str, aid: str):
     registry = _registry()
     try:
         service = registry.get(sid)
@@ -185,6 +199,16 @@ def trigger_action(sid: str, aid: str):
     pm = _process_manager()
 
     try:
+        operations = current_app.config.get("service_operations")
+        if operations is not None:
+            from service_operations import OperationsError
+            try:
+                if action.type in {"process_start", "process_restart"}:
+                    operations.check_dependencies_ready(service)
+                if action.type in {"process_stop", "process_restart"}:
+                    operations.check_stop_allowed(service)
+            except OperationsError as exc:
+                return jsonify({"error": str(exc)}), 409
         if action.type == "process_start":
             state = pm.start(service)
             _log.info("start: %s pid=%s", sid, state.pid)
@@ -213,6 +237,13 @@ def trigger_action(sid: str, aid: str):
             return jsonify({"error": "unsupported_action_type", "type": action.type}), 400
     except ProcessError as exc:
         return jsonify({"error": "process_error", "message": str(exc)}), 409
+
+    operations = current_app.config.get("service_operations")
+    if operations is not None and action.type in {"process_start", "process_stop", "process_restart"}:
+        try:
+            operations.record_action(sid, action.type)
+        except OSError:
+            _log.warning("Service action succeeded but event history could not be saved")
 
     return jsonify(
         {

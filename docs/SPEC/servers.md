@@ -11,8 +11,12 @@ Servers는 HTTP/TCP 서버, worker, gateway, tunnel처럼 계속 살아 있는 �
 - shell wrapper는 최종 서버를 `exec`해야 신호와 PID 추적이 유지됩니다.
 - 시작 전 cwd, 실행 파일과 포트 점유를 검사합니다. 다른 프로세스가 같은 포트를 사용하면
   중복으로 시작하지 않습니다.
-- crash 복구와 반복 실패의 backoff/재시도 한도는 PM2 manifest에서 설정합니다.
+- crash 복구와 반복 실패의 backoff/재시도 한도는 서비스의 `restart` 설정을 PM2
+  manifest에 전달합니다. 기본값은 기존 정책을 유지합니다. `max_restarts`는 짧은
+  실행 뒤 실패하는 불안정한 시작의 한도이며 시간당 crash 횟수 제한이 아닙니다.
   명시적 stop을 crash로 취급해 부활시키지 않습니다.
+- `max_memory_restart_mb: 0`은 메모리 재시작을 끕니다. 양수는 PM2가 관리하는 루트
+  PID 기준이며 화면의 부모·자식 RSS 합계와 다릅니다. PM2 주기 검사라 hard cap이 아닙니다.
 - controller 시작 시 `autostart: true` 서비스를 background에서 확인합니다.
   `autostart: false`인 중지 서비스를 임의 시작하지 않으며 기존 online 서비스는 유지합니다.
 
@@ -27,8 +31,44 @@ PM2 stop의 primary signal은 `SIGINT`입니다. 설정된 timeout과 `SIGTERM` 
 않았는지 확인한 결과여야 합니다. `always_on`, stop/restart 표시 위치와 확인 정책은
 UI 위험 액션 배치에 반영하며 설정을 보존합니다.
 
-실행 중 정의 제거 또는 command/cwd/env/종료 계약 변경은 reload에서 거부합니다.
+실행 중 정의 제거 또는 command/cwd/env/종료 계약·PM2 재시작 정책·로그 출력 대상 변경은
+reload에서 거부합니다.
 먼저 서비스를 중지한 뒤 편집합니다. 상세 절차는 [설정](configuration.md)에 있습니다.
+
+## 장애 이력과 선택적 health 복구
+
+`ServiceOperations`는 운영 시작 시 10초 이상 간격으로 공유 PM2 snapshot을 관측합니다.
+서비스별 최근 100개 사건을 `runtime/service-operations/events.json`에 원자적으로 저장하며
+파일은 private 권한입니다. 정의의 env/command나 로그 원문은 저장하지 않습니다.
+수동 실행 성공과 관측한 online/종료/재시작을 구분합니다. PM2 재시작 횟수에는 수동
+재시작과 엔진 전환도 포함될 수 있으므로 crash 횟수라고 표시하지 않습니다.
+종료 시각은 관측 시각이며 실제 종료 원인·정확한 발생 시각을 추정하지 않습니다.
+
+`recovery.enabled`는 기본 false입니다. 켠 서비스만 시작 유예시간 이후의 연속된
+새 health 실패를 세고, PID/create_time/시작 시각과 정의·health를 재검증한 뒤 PM2에
+재시작을 요청합니다. cooldown과 시간당 한도는 private 파일에 보존하므로 controller
+재시작으로 초기화되지 않습니다. health 복구 확인까지 성공해야 복구 완료로 기록합니다.
+중지·외부·identity 불명·엔진 점검/미복구 상태에서는 자동 재시작하지 않습니다.
+기능을 끈 서비스에는 이 기능을 위한 health 요청을 추가하지 않습니다.
+
+## 서비스 그룹과 선행 서비스
+
+`group`은 선택한 표시 이름이며 Servers 화면에서 그룹 시작/중지/재시작을 요청할 수
+있습니다. `depends_on`은 서비스 ID 목록입니다. 알 수 없는 ID, 자기 자신, 중복,
+순환 참조는 설정 검증에서 거부합니다. 그룹 이름은 앞뒤 공백·제어문자·`/`가 없는
+80자 이하 문자열이고 빈 값은 그룹 미지정입니다.
+
+시작은 선행 서비스부터, 중지는 역순으로 수행합니다. 시작 후 online과 설정된 health를
+최대 30초 확인하며 선행 실패 시 후속 서비스는 blocked로 남습니다. 그룹 밖의 선행
+서비스를 임의 시작하지 않으며 정상 준비 상태를 요구합니다. 그룹 밖에서 실행 중인
+후속 서비스가 의존하는 대상을 중지하지 않습니다. 개별 중지/재시작에도 이 보호가
+적용됩니다. 그룹 재시작은 처음부터 중지 상태인 서비스를 시작하지 않습니다.
+등록된 시작/중지/재시작 action의 enabled 정책을 지킵니다.
+
+요청은 background job이며 화면은 활성 job만 조회합니다. 그룹 작업은 한 번에 하나만
+실행하고 최근 50개 결과를 메모리에 보관합니다. controller 재시작을 넘어 job을 재개하지
+않습니다. PM2 backend에서만 지원하며 일회성 Action Group과 구별합니다.
+`autostart`도 의존 순서를 지키며 autostart=false인 선행 서비스를 임의 시작하지 않습니다.
 
 ## 외부 프로세스
 
@@ -51,6 +91,8 @@ PID/create_time, holder, cmdline/cwd/health를 다시 확인하고 controller나
 목록은 정상 PM2 snapshot을 재사용하고 TTL 경과 시 한 번의 background refresh를
 시작합니다. 최초 snapshot이 없으면 잠시 `unknown`, 갱신이 지연되거나 실패하면
 직전 상태와 경고를 표시합니다. mutation은 stale snapshot만으로 성공 처리하지 않습니다.
+운영 snapshot은 기존 wrapper 잠금 아래 공식 PM2 API를 통해 필요한 상태 필드만 받아
+Python으로 env 원문을 전달하지 않습니다. 별도 상주 Node bridge를 두지 않습니다.
 응답 필드와 상태값은 [HTTP API](../../API.md#서비스-데이터)에 정의합니다.
 
 메인과 Servers 목록의 `PORT / URL` 영역은 `open_url`이 있으면 클릭 또는 Enter·Space로
@@ -64,6 +106,7 @@ URL 열기는 로컬 host로 설정된 주소를 원격 dashboard의 hostname에
 ## 코드와 검증
 
 - `backend/pm2_manager.py`: `Pm2Manager`, `build_manifest`, `reconcile_service_definitions`
+- `backend/service_operations.py`, `backend/routes/operations.py`: 관측·복구·그룹 job
 - `backend/health_checker.py`, `backend/process_manager.py`: 외부 진단과 종료 안전 검사
 - `backend/routes/api.py`, `backend/app.py`: 상태/action API, background autostart
 - `frontend/src/features/dashboard/`, `frontend/src/utils/openServiceUrl.ts`: 행·확인·URL

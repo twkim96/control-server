@@ -7,6 +7,8 @@ import type {
   HttpsMeta,
   LifecycleMeta,
   LogMeta,
+  RecoveryMeta,
+  RestartMeta,
   StopStrategyMeta,
 } from "./service";
 
@@ -26,6 +28,10 @@ export interface ServicePayload {
   https?: HttpsMeta | null;
   health?: HealthMeta | null;
   log?: LogMeta | null;
+  restart?: RestartMeta | null;
+  recovery?: RecoveryMeta | null;
+  group?: string;
+  depends_on?: string[];
   lifecycle?: LifecycleMeta | null;
   actions?: Array<{
     id: string;

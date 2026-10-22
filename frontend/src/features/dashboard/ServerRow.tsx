@@ -195,6 +195,7 @@ export function ServerRow({
             {runtime?.resource?.available
               ? `CPU ${formatCpuPercent(runtime.resource.cpu_percent)} · RAM ${formatMemory(runtime.resource.memory_rss_bytes)}`
               : `pid ${formatPid(runtime?.pid)}`}
+            {runtime?.supervision ? ` · 재시작 ${runtime.supervision.restart_count}` : ""}
           </span>
         </div>
 

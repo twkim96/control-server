@@ -313,13 +313,13 @@ class Pm2Manager:
             "exec_mode": "fork",
             "instances": 1,
             "watch": False,
-            "autorestart": True,
-            "min_uptime": "5s",
-            "max_restarts": 5,
-            "restart_delay": 1000,
-            "exp_backoff_restart_delay": 100,
+            "autorestart": service.restart.autorestart,
+            "min_uptime": int(service.restart.min_uptime_seconds * 1000),
+            "max_restarts": service.restart.max_restarts,
+            "restart_delay": service.restart.restart_delay_ms,
+            "exp_backoff_restart_delay": service.restart.exp_backoff_restart_delay_ms,
             "kill_timeout": max(100, int(kill_timeout * 1000)),
-            "log_file": str(self._log_root / f"{service.id}.log"),
+            "log_file": str(self._log_root / f"{service.id}.log") if service.log.enabled else "/dev/null",
             # PM2 otherwise creates duplicate per-stream files under
             # PM2_HOME/logs in addition to log_file, bypassing log.max_bytes.
             "out_file": "/dev/null",
@@ -327,6 +327,8 @@ class Pm2Manager:
             "merge_logs": True,
             "time": False,
         }
+        if service.restart.max_memory_restart_mb:
+            app["max_memory_restart"] = service.restart.max_memory_restart_mb * 1024 * 1024
         return {"apps": [app]}
 
     def _runtime_definition_signature(self, service: ServiceConfig) -> tuple[object, ...]:
@@ -801,6 +803,24 @@ class Pm2Manager:
             )
         return snapshot
 
+    def rotate_running_logs(self, services) -> int:
+        """Rotate through the wrapper so engine maintenance/CLI locks cover fds."""
+        from routes.config_api import _config_reconcile_lock
+        with _config_reconcile_lock, ExitStack() as stack:
+            candidates = [s for s in services if s.log.rotate_while_running and s.log.enabled]
+            for service in sorted(candidates, key=lambda s: s.id):
+                stack.enter_context(self.service_operation(service.id))
+            policies = [{"id": s.id, "max_bytes": s.log.max_bytes,
+                         "keep": s.log.keep, "compress": s.log.compress}
+                        for s in candidates if self._active_services.get(s.id) == s]
+            if not policies:
+                return 0
+            # No PM2 command is launched on ordinary ticks below the threshold.
+            if not any(self._log.needs_live_rotation(p["id"], p["max_bytes"]) for p in policies):
+                return 0
+            result = self._command(["__rotate_logs", str(self._log_root), json.dumps(policies)], timeout_seconds=60)
+            return int(json.loads(result.stdout).get("rotated", 0))
+
     def _rotate_service_log(self, service: ServiceConfig) -> None:
         self._log.rotate_if_needed(
             service.id,
@@ -854,6 +874,8 @@ class Pm2Manager:
 
     @staticmethod
     def _default_runner(argv: list[str], env: dict[str, str], timeout: float) -> CommandResult:
+        if len(argv) > 1 and argv[1] == "jlist":
+            argv = [argv[0], "__runtime_snapshot", *argv[2:]]
         result = subprocess.run(
             argv,
             env=env,
@@ -892,7 +914,20 @@ def _manifest_runtime_signature(manifest: object) -> tuple[object, ...]:
         app.get("cwd"),
         json.dumps(app.get("env") or {}, ensure_ascii=False, sort_keys=True),
         app.get("kill_timeout"),
+        app.get("log_file"),
+        app.get("autorestart", True),
+        _uptime_ms(app.get("min_uptime", "5s")),
+        app.get("max_restarts", 5),
+        app.get("restart_delay", 1000),
+        app.get("exp_backoff_restart_delay", 100),
+        app.get("max_memory_restart", 0),
     )
+
+
+def _uptime_ms(value):
+    if isinstance(value, str) and value.endswith("s"):
+        return int(float(value[:-1]) * 1000)
+    return value
 
 
 def _service_stop_strategy(service: ServiceConfig) -> StopStrategy:

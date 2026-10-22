@@ -12,11 +12,10 @@
 
 회전 정책:
 
-* 자식이 살아있는 동안엔 회전하지 않는다. 자식이 fd를 잡고 있어서 .log → .log.1 rename은
-  자식이 보는 inode를 바꾸지 못한다 (자식은 이전 inode에 계속 append).
-* 자식이 종료된 시점에 LogManager가 .log 크기를 보고 max_bytes를 넘었으면 회전한다.
-* 그래서 always_on 서비스의 .log는 stop/restart 전까지 누적될 수 있다. 로그 폭주가
-  우려되면 외부 logrotate 사용을 권장한다.
+* 기본은 자식 종료 시 크기 기반 회전이다. 단순 rename은 열린 fd를 바꾸지 않는다.
+* PM2의 선택적 실행 중 회전은 wrapper 잠금 안에서 reloadLogs로 fd를 재개방하고
+  daemon의 이전 fd가 닫힌 뒤에만 pending 파일을 보관/압축한다.
+* SSE는 이전 fd를 drain하고 inode 교체를 따라간다.
 
 브라우저에서 임의 파일을 읽지 못하도록, 외부에서 받은 service_id는 사용 전에
 ServiceRegistry로 검증해야 한다. 이 모듈은 service_id가 이미 검증되었다고 가정한다.
@@ -24,6 +23,10 @@ ServiceRegistry로 검증해야 한다. 이 모듈은 service_id가 이미 검�
 
 from __future__ import annotations
 
+import gzip
+import shutil
+import json
+import tempfile
 import io
 import os
 import threading
@@ -125,31 +128,93 @@ class LogManager:
         if size < policy.max_bytes:
             return
 
-        # 가장 오래된 것부터 한 칸씩 밀고 가장 오래된 건 삭제.
-        if policy.keep > 0:
-            oldest = self.rotated_path(service_id, policy.keep)
-            if oldest.exists():
-                try:
-                    oldest.unlink()
-                except OSError:
-                    pass
-            for n in range(policy.keep - 1, 0, -1):
-                src = self.rotated_path(service_id, n)
-                if src.exists():
-                    try:
-                        src.rename(self.rotated_path(service_id, n + 1))
-                    except OSError:
-                        pass
-            try:
-                base.rename(self.rotated_path(service_id, 1))
-            except OSError:
-                pass
+        self._shift_archives(service_id, policy.keep)
+        if policy.keep:
+            base.replace(self.rotated_path(service_id, 1))
         else:
-            # keep == 0: 그냥 비운다
-            try:
-                base.unlink()
-            except OSError:
-                pass
+            base.unlink(missing_ok=True)
+
+    def _shift_archives(self, service_id: str, keep: int) -> None:
+        # A slot is shared by plain/gzip archives, including a policy change.
+        for candidate in self._root.glob(f"{service_id}.log.*"):
+            number = candidate.name.removeprefix(f"{service_id}.log.").removesuffix(".gz")
+            if number.isdigit() and int(number) >= keep:
+                candidate.unlink(missing_ok=True)
+        for n in range(keep - 1, 0, -1):
+            for suffix in ("", ".gz"):
+                old = self._root / f"{service_id}.log.{n}{suffix}"
+                if old.exists():
+                    old.replace(self._root / f"{service_id}.log.{n + 1}{suffix}")
+
+    def pending_path(self, service_id: str) -> Path:
+        return self._root / f"{service_id}.log.pending"
+
+    def handoff_path(self, service_id: str) -> Path:
+        return self._root / f"{service_id}.log.pending.closed"
+
+    def _generation(self, service_id: str):
+        try:
+            data = json.loads((self._root / f"{service_id}.log.generation").read_text())
+            if type(data.get("sequence")) is int and type(data.get("inode")) is int:
+                return data
+        except (OSError, ValueError, AttributeError):
+            pass
+        return {"sequence": 0, "inode": None}
+
+    def _write_generation(self, service_id: str) -> None:
+        data = {"sequence": self._generation(service_id)["sequence"] + 1,
+                "inode": self.log_path(service_id).stat().st_ino}
+        fd, temporary = tempfile.mkstemp(prefix=".log-generation-", dir=self._root)
+        try:
+            with os.fdopen(fd, "w") as stream:
+                json.dump(data, stream)
+            os.replace(temporary, self._root / f"{service_id}.log.generation")
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
+
+    def mark_live_handoff(self, service_id: str) -> None:
+        # Only the PM2 helper calls this after checking that the daemon closed
+        # the previous fd. Compression may fail without blocking new SSE data.
+        self.handoff_path(service_id).touch(mode=0o600)
+
+    def needs_live_rotation(self, service_id: str, max_bytes: int) -> bool:
+        try:
+            return self.pending_path(service_id).exists() or (max_bytes > 0 and self.log_path(service_id).stat().st_size >= max_bytes)
+        except OSError:
+            return False
+
+    def prepare_live_rotation(self, service_id: str, *, max_bytes: int) -> bool:
+        with self._lock:
+            if self.pending_path(service_id).exists():
+                return True
+            if not self.needs_live_rotation(service_id, max_bytes):
+                return False
+            self.handoff_path(service_id).unlink(missing_ok=True)
+            self.log_path(service_id).rename(self.pending_path(service_id))
+            # PM2 reopens with append; create now so readers see the new inode.
+            self.log_path(service_id).touch(mode=0o600)
+            self._write_generation(service_id)
+            return True
+
+    def finish_live_rotation(self, service_id: str, *, keep: int, compress: bool) -> None:
+        with self._lock:
+            pending = self.pending_path(service_id)
+            if not pending.exists():
+                return
+            # Compression finishes before old archives are removed. On failure
+            # leave the pending source for the next attempt.
+            source = pending
+            if compress and keep:
+                temporary = Path(str(pending) + ".gz.tmp")
+                with pending.open("rb") as src, gzip.open(temporary, "wb") as dst:
+                    shutil.copyfileobj(src, dst, 1024 * 1024)
+                source = temporary
+            self._shift_archives(service_id, keep)
+            if keep:
+                source.replace(self._root / (f"{service_id}.log.1" + (".gz" if compress else "")))
+            pending.unlink(missing_ok=True)
+            self.handoff_path(service_id).unlink(missing_ok=True)
 
     # ------------------------------------------------------------------
     # 읽기 (tail / streaming)
@@ -217,22 +282,54 @@ class LogManager:
                 return
             time.sleep(idle_sleep)
 
-        offset = 0 if from_start else path.stat().st_size
-        last_data_at = time.time()
-
-        while True:
-            if stop_event is not None and stop_event.is_set():
-                return
-            lines, offset = self.read_since(service_id, offset)
-            if lines:
-                last_data_at = time.time()
-                for line in lines:
-                    yield line
-            else:
-                if time.time() - last_data_at > keepalive_after:
-                    last_data_at = time.time()
-                    yield None
-                time.sleep(idle_sleep)
+        # Keep the old fd until PM2 has flushed/closed it. A byte offset alone
+        # cannot detect replacement when the new file is already larger.
+        with path.open("rb") as initial:
+            fh = initial
+            if not from_start:
+                fh.seek(0, io.SEEK_END)
+            last_data_at = time.monotonic()
+            generation = self._generation(service_id)
+            last_generation = generation["sequence"] if generation["inode"] in {None, os.fstat(fh.fileno()).st_ino} else None
+            try:
+                while True:
+                    if stop_event is not None and stop_event.is_set():
+                        return
+                    data = fh.read()
+                    if data:
+                        last_data_at = time.monotonic()
+                        for line in data.decode("utf-8", errors="replace").splitlines():
+                            yield line
+                        continue
+                    try:
+                        current = path.stat()
+                        previous = os.fstat(fh.fileno())
+                        if current.st_ino != previous.st_ino:
+                            if not self.pending_path(service_id).exists() or self.handoff_path(service_id).exists():
+                                # One final drain after the writer closed.
+                                data = fh.read()
+                                if data:
+                                    for line in data.decode("utf-8", errors="replace").splitlines():
+                                        yield line
+                                generation = self._generation(service_id)
+                                if last_generation is None or generation["sequence"] != last_generation + 1:
+                                    yield "[Control Server] 로그 회전 중 스트림 일부가 누락되었습니다. 보관 로그를 확인하세요."
+                                last_generation = generation["sequence"]
+                                new_fh = path.open("rb")
+                                fh.close()
+                                fh = new_fh
+                                continue
+                        elif current.st_size < fh.tell():
+                            fh.seek(0)
+                            continue
+                    except FileNotFoundError:
+                        pass
+                    if time.monotonic() - last_data_at > keepalive_after:
+                        last_data_at = time.monotonic()
+                        yield None
+                    time.sleep(idle_sleep)
+            finally:
+                fh.close()
 
     # ------------------------------------------------------------------
     # 정리

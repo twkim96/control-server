@@ -10,13 +10,21 @@ import {
   listConfigServices,
   updateService,
 } from "../../api/config";
+import { listServices } from "../../api/services";
 import type { ServicePayload } from "../../types/config";
-import type { ActionType, LifecycleMeta, ServiceMeta } from "../../types/service";
+import type {
+  ActionType,
+  LifecycleMeta,
+  RecoveryMeta,
+  RestartMeta,
+  ServiceMeta,
+} from "../../types/service";
 import { describeError } from "../../utils/errors";
 import { ActionsField } from "./ActionsField";
 import { SUPPORTED_ACTIONS } from "./supported-actions";
 import { EnvField } from "./EnvField";
 import { LifecycleField } from "./LifecycleField";
+import { SupervisionFields } from "./SupervisionFields";
 import {
   ServiceFormFields,
   type BasicFields,
@@ -52,10 +60,35 @@ const DEFAULT_BASIC: BasicFields = {
   https_cert_env: "SSL_CERT_FILE",
   https_key_env: "SSL_KEY_FILE",
   health_enabled: true,
+  health_type: "http",
   health_url: "",
   health_timeout: "2",
   health_verify_ssl: true,
   log_tail_lines: "200",
+  log_enabled: true,
+  log_max_bytes: String(5 * 1024 * 1024),
+  log_keep: "3",
+  rotate_while_running: false,
+  compress_logs: false,
+  group: "",
+  depends_on: [],
+};
+
+const DEFAULT_RESTART: RestartMeta = {
+  autorestart: true,
+  min_uptime_seconds: 5,
+  max_restarts: 5,
+  restart_delay_ms: 1000,
+  exp_backoff_restart_delay_ms: 100,
+  max_memory_restart_mb: 0,
+};
+
+const DEFAULT_RECOVERY: RecoveryMeta = {
+  enabled: false,
+  failure_threshold: 3,
+  startup_grace_seconds: 30,
+  cooldown_seconds: 300,
+  max_restarts_per_hour: 3,
 };
 
 const ALL_ACTION_TYPES = new Set<ActionType>(SUPPORTED_ACTIONS.map((a) => a.type));
@@ -68,6 +101,10 @@ export function ServiceFormPage({ mode }: { mode: ServiceFormMode }) {
   const [basic, setBasic] = useState<BasicFields>(DEFAULT_BASIC);
   const [env, setEnv] = useState<Record<string, string>>({});
   const [lifecycle, setLifecycle] = useState<LifecycleMeta>(DEFAULT_LIFECYCLE);
+  const [restart, setRestart] = useState<RestartMeta>(DEFAULT_RESTART);
+  const [recovery, setRecovery] = useState<RecoveryMeta>(DEFAULT_RECOVERY);
+  const [configServices, setConfigServices] = useState<ServiceMeta[]>([]);
+  const [supervisorBackend, setSupervisorBackend] = useState<string>();
   const [actions, setActions] = useState<Set<ActionType>>(new Set(ALL_ACTION_TYPES));
   const [loading, setLoading] = useState(mode === "edit");
   const [submitting, setSubmitting] = useState(false);
@@ -98,11 +135,21 @@ export function ServiceFormPage({ mode }: { mode: ServiceFormMode }) {
       https_cert_env: meta.https?.env.cert_file ?? "SSL_CERT_FILE",
       https_key_env: meta.https?.env.key_file ?? "SSL_KEY_FILE",
       health_enabled: meta.health.enabled,
+      health_type: meta.health.type === "tcp" ? "tcp" : "http",
       health_url: meta.health.url ?? "",
       health_timeout: String(meta.health.timeout_seconds),
       health_verify_ssl: meta.health.verify_ssl,
       log_tail_lines: String(meta.log.tail_lines),
+      log_enabled: meta.log.enabled,
+      log_max_bytes: String(meta.log.max_bytes),
+      log_keep: String(meta.log.keep),
+      rotate_while_running: meta.log.rotate_while_running ?? false,
+      compress_logs: meta.log.compress ?? false,
+      group: meta.group ?? "",
+      depends_on: [...(meta.depends_on ?? [])],
     });
+    setRestart({ ...DEFAULT_RESTART, ...meta.restart });
+    setRecovery({ ...DEFAULT_RECOVERY, ...meta.recovery });
     setEnv({ ...meta.env });
     setLifecycle({ ...meta.lifecycle });
     const enabled = new Set<ActionType>();
@@ -114,33 +161,57 @@ export function ServiceFormPage({ mode }: { mode: ServiceFormMode }) {
 
   // edit 모드: 기존 값 로드
   useEffect(() => {
-    if (!isEdit || !editingId) return;
     let cancelled = false;
-    // 비동기 fetch 직전 loading 표시. then/finally에서 다시 setState한다.
+    let pendingLoads = 2;
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    setLoading(true);
+    setSupervisorBackend(undefined);
+    const finishLoad = () => {
+      pendingLoads -= 1;
+      if (!cancelled && pendingLoads === 0 && isEdit) setLoading(false);
+    };
+    if (isEdit && editingId) {
+      setLoading(true);
+    }
     listConfigServices()
       .then((res) => {
         if (cancelled) return;
-        const found = res.services.find((s) => s.id === editingId);
-        if (!found) {
-          setError(`서비스를 찾지 못했습니다: ${editingId}`);
-          return;
+        setConfigServices(res.services);
+        if (isEdit && editingId) {
+          const found = res.services.find((s) => s.id === editingId);
+          if (!found) {
+            setError(`서비스를 찾지 못했습니다: ${editingId}`);
+            return;
+          }
+          applyMeta(found);
         }
-        applyMeta(found);
       })
-      .catch((err) => !cancelled && setError(describeError(err)))
-      .finally(() => !cancelled && setLoading(false));
+      .catch((err) => {
+        if (!cancelled && isEdit) setError(describeError(err));
+      })
+      .finally(finishLoad);
+    // The config endpoint intentionally contains definitions only. Use the existing
+    // service-list capability field to decide whether PM2-only controls are available.
+    listServices()
+      .then((res) => {
+        if (!cancelled) setSupervisorBackend(res.supervisor?.backend);
+      })
+      .catch(() => {
+        if (!cancelled) setSupervisorBackend(undefined);
+      })
+      .finally(finishLoad);
     return () => {
       cancelled = true;
     };
   }, [editingId, isEdit, applyMeta]);
 
   const payload = useMemo<ServicePayload | undefined>(() => {
-    return buildPayload(basic, env, lifecycle, actions);
-  }, [basic, env, lifecycle, actions]);
+    return buildPayload(basic, env, lifecycle, actions, restart, recovery);
+  }, [basic, env, lifecycle, actions, restart, recovery]);
 
-  const validation = useMemo(() => validate(basic), [basic]);
+  const validation = useMemo(
+    () => validate(basic, restart, recovery),
+    [basic, restart, recovery],
+  );
 
   const save = async () => {
     if (!payload || validation) return;
@@ -204,6 +275,23 @@ export function ServiceFormPage({ mode }: { mode: ServiceFormMode }) {
 
       <ServiceFormFields value={basic} onChange={setBasic} lockId={isEdit} />
 
+      {supervisorBackend === "pm2" ? (
+        <SupervisionFields
+          basic={basic}
+          services={configServices}
+          restart={restart}
+          recovery={recovery}
+          onBasicChange={(patch) => setBasic((current) => ({ ...current, ...patch }))}
+          onRestartChange={setRestart}
+          onRecoveryChange={setRecovery}
+          healthEnabled={basic.health_enabled}
+        />
+      ) : (
+        <div className={classes.help} role="note">
+          자동 재시작, 헬스 복구, 그룹 및 의존성 설정은 PM2 backend에서만 편집할 수 있습니다.
+        </div>
+      )}
+
       <div className={classes.section}>
         <div className={classes.sectionTitle}>환경변수</div>
         <EnvField value={env} onChange={setEnv} />
@@ -263,7 +351,11 @@ export function ServiceFormPage({ mode }: { mode: ServiceFormMode }) {
   );
 }
 
-function validate(basic: BasicFields): string | undefined {
+function validate(
+  basic: BasicFields,
+  restart: RestartMeta,
+  recovery: RecoveryMeta,
+): string | undefined {
   if (!basic.id) return "서비스 ID를 입력하세요.";
   if (!/^[A-Za-z0-9_-]+$/.test(basic.id))
     return "서비스 ID는 영문/숫자/_/- 만 가능합니다.";
@@ -286,7 +378,38 @@ function validate(basic: BasicFields): string | undefined {
   }
   if (basic.health_enabled && !basic.health_url)
     return "health 사용을 켰다면 URL을 입력하세요.";
+  if (basic.health_enabled && !["http", "tcp"].includes(basic.health_type))
+    return "health 검사 방식은 HTTP 또는 TCP여야 합니다.";
+  if (basic.group !== basic.group.trim() || basic.group.length > 80 ||
+      basic.group.includes("/") || Array.from(basic.group).some((char) => char.charCodeAt(0) < 32))
+    return "그룹 이름은 앞뒤 공백과 /, 제어 문자가 없는 80자 이내 이름이어야 합니다.";
+  if (basic.depends_on.includes(basic.id)) return "서비스는 자기 자신에 의존할 수 없습니다.";
+  if (!validInteger(basic.log_tail_lines, 0) || !validInteger(basic.log_max_bytes, 0) || !validInteger(basic.log_keep, 0))
+    return "로그 줄 수, 회전 크기, 보관 수는 0 이상의 정수여야 합니다.";
+  if (!Number.isFinite(restart.min_uptime_seconds) || restart.min_uptime_seconds <= 0)
+    return "최소 실행 시간은 0보다 큰 유한한 숫자여야 합니다.";
+  if (!Number.isInteger(restart.max_restarts) || restart.max_restarts < 1)
+    return "최대 재시작 횟수는 1 이상의 정수여야 합니다.";
+  if (![restart.restart_delay_ms, restart.exp_backoff_restart_delay_ms, restart.max_memory_restart_mb]
+    .every((value) => Number.isInteger(value) && value >= 0))
+    return "재시작 지연과 메모리 제한은 0 이상의 정수여야 합니다.";
+  if (!Number.isInteger(recovery.failure_threshold) || recovery.failure_threshold < 1)
+    return "연속 실패 횟수는 1 이상의 정수여야 합니다.";
+  if (![recovery.startup_grace_seconds, recovery.cooldown_seconds]
+    .every((value) => Number.isFinite(value) && value >= 0))
+    return "시작 유예 시간과 cooldown은 0 이상의 유한한 숫자여야 합니다.";
+  if (!Number.isInteger(recovery.max_restarts_per_hour) || recovery.max_restarts_per_hour < 1)
+    return "시간당 최대 재시작 횟수는 1 이상의 정수여야 합니다.";
+  if (recovery.max_restarts_per_hour > 100)
+    return "시간당 최대 재시작 횟수는 100 이하여야 합니다.";
+  if (recovery.enabled && !basic.health_enabled)
+    return "헬스 복구를 사용하려면 health endpoint를 켜야 합니다.";
   return undefined;
+}
+
+function validInteger(value: string, minimum: number): boolean {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed >= minimum;
 }
 
 function buildPayload(
@@ -294,6 +417,8 @@ function buildPayload(
   env: Record<string, string>,
   lifecycle: LifecycleMeta,
   actions: Set<ActionType>,
+  restart: RestartMeta,
+  recovery: RecoveryMeta,
 ): ServicePayload | undefined {
   const port = basic.port.trim() ? Number(basic.port) : null;
 
@@ -347,17 +472,23 @@ function buildPayload(
     },
     health: {
       enabled: basic.health_enabled,
-      type: basic.health_enabled ? "http" : "none",
+      type: basic.health_enabled ? basic.health_type : "none",
       url: basic.health_enabled ? basic.health_url : null,
       timeout_seconds: Number(basic.health_timeout) || 2,
       verify_ssl: basic.health_verify_ssl,
     },
     log: {
-      enabled: true,
-      tail_lines: Number(basic.log_tail_lines) || 200,
-      max_bytes: 5 * 1024 * 1024,
-      keep: 3,
+      enabled: basic.log_enabled,
+      tail_lines: Number(basic.log_tail_lines),
+      max_bytes: Number(basic.log_max_bytes),
+      keep: Number(basic.log_keep),
+      rotate_while_running: basic.rotate_while_running,
+      compress: basic.compress_logs,
     },
+    restart,
+    recovery,
+    group: basic.group.trim(),
+    depends_on: basic.depends_on,
     lifecycle,
     actions: actionList,
   };

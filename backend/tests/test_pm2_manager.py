@@ -862,3 +862,26 @@ def test_rejects_pm2_home_that_exceeds_macos_socket_limit(tmp_path: Path) -> Non
     long_runtime = tmp_path / ("x" * 110)
     with pytest.raises(Pm2Error, match="too long"):
         Pm2Manager(long_runtime, tmp_path / "logs")
+
+
+def test_restart_policy_changes_manifest_and_blocks_live_reload(tmp_path: Path) -> None:
+    from config_schema import RestartConfig
+    runner = lambda *_: CommandResult(0, json.dumps([{"name": "server-control--example", "pid": os.getpid(), "pm2_env": {"status": "online"}}]), "")
+    manager = _manager(tmp_path, runner)
+    service = _service(tmp_path)
+    manager.activate_service(service)
+    changed = replace(service, restart=RestartConfig(autorestart=False, max_memory_restart_mb=512))
+    app = manager.build_manifest(changed)["apps"][0]
+    assert app["autorestart"] is False
+    assert app["max_memory_restart"] == 512 * 1024 * 1024
+    with pytest.raises(Pm2Error, match="먼저"):
+        manager.reconcile_service_definitions((changed,))
+
+
+def test_live_rotation_below_threshold_launches_no_pm2_client(tmp_path: Path) -> None:
+    manager = _manager(tmp_path, lambda *_: pytest.fail("no PM2 client needed"))
+    service = _service(tmp_path)
+    service = replace(service, log=replace(service.log, rotate_while_running=True))
+    manager.activate_service(service)
+    manager._log.log_path(service.id).write_text("small")
+    assert manager.rotate_running_logs((service,)) == 0

@@ -25,10 +25,18 @@ export interface BasicFields {
   https_cert_env: string;
   https_key_env: string;
   health_enabled: boolean;
+  health_type: string;
   health_url: string;
   health_timeout: string;
   health_verify_ssl: boolean;
   log_tail_lines: string;
+  log_enabled: boolean;
+  log_max_bytes: string;
+  log_keep: string;
+  rotate_while_running: boolean;
+  compress_logs: boolean;
+  group: string;
+  depends_on: string[];
 }
 
 export interface ServiceFormFieldsProps {
@@ -338,6 +346,19 @@ export function ServiceFormFields({ value, onChange, lockId }: ServiceFormFields
         </label>
         {value.health_enabled && (
           <>
+            <Field label="health 검사 방식">
+              <select
+                className={classes.input}
+                value={value.health_type}
+                onChange={(e) => set({ health_type: e.target.value })}
+              >
+                <option value="http">HTTP</option>
+                <option value="tcp">TCP</option>
+              </select>
+            </Field>
+            {value.health_type === "tcp" && (
+              <div className={classes.help}>TCP 검사에서는 URL에 host:port를 입력합니다.</div>
+            )}
             <div className={classes.fieldRow}>
               <Field label="health URL">
                 <Input
@@ -386,6 +407,56 @@ export function ServiceFormFields({ value, onChange, lockId }: ServiceFormFields
             onWheel={(e) => (e.target as HTMLInputElement).blur()}
           />
         </Field>
+        <label className={classes.checkboxRow}>
+          <input
+            type="checkbox"
+            checked={value.log_enabled}
+            onChange={(e) => set({ log_enabled: e.target.checked })}
+          />
+          서비스 로그 저장
+        </label>
+        <div className={classes.help}>
+          기존 로그 파일은 유지됩니다. 이 설정을 변경하려면 서비스를 중지한 뒤 저장하세요.
+        </div>
+        <div className={classes.fieldRow}>
+          <Field label="회전 기준 크기 (bytes)">
+            <Input
+              type="number"
+              value={value.log_max_bytes}
+              onChange={(e) => set({ log_max_bytes: e.target.value })}
+              min={0}
+              onWheel={(e) => (e.target as HTMLInputElement).blur()}
+            />
+          </Field>
+          <Field label="보관할 이전 로그 수">
+            <Input
+              type="number"
+              value={value.log_keep}
+              onChange={(e) => set({ log_keep: e.target.value })}
+              min={0}
+              onWheel={(e) => (e.target as HTMLInputElement).blur()}
+            />
+          </Field>
+        </div>
+        <label className={classes.checkboxRow}>
+          <input
+            type="checkbox"
+            checked={value.rotate_while_running}
+            onChange={(e) => set({ rotate_while_running: e.target.checked })}
+          />
+          실행 중 로그 회전 (PM2 7.1+)
+        </label>
+        <div className={classes.help}>
+          실행 중 회전은 선택한 PM2 엔진이 7.1 이상일 때 지원됩니다.
+        </div>
+        <label className={classes.checkboxRow}>
+          <input
+            type="checkbox"
+            checked={value.compress_logs}
+            onChange={(e) => set({ compress_logs: e.target.checked })}
+          />
+          회전 로그 압축
+        </label>
       </div>
 
       {picker && (
