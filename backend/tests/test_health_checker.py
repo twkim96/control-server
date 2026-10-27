@@ -457,3 +457,16 @@ def test_request_snapshot_prevents_reprobe_after_ttl(pm):
         assert probe.call_count == 1
     finally:
         checker.close()
+
+
+def test_occupied_port_without_observable_pid_remains_unmanaged(pm):
+    from dataclasses import replace
+    checker=HealthChecker(pm)
+    service=_make_service()
+    service=replace(service,health=replace(service.health,enabled=False))
+    with patch('process_manager._find_port_holder',return_value={'pid':None,'name':'unknown'}):
+        result=checker.check(service)
+    assert result.state=='unknown'
+    assert result.unmanaged is True
+    assert result.unmanaged_pid is None
+    assert result.adoption_evaluation.diagnostics.reason=='proc_inspect_failed'

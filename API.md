@@ -117,6 +117,7 @@ curl -sS -b "$COOKIE_JAR" \
 | GET | `/api/services/<sid>` | 세션 | 서비스 상세 및 입양 진단 |
 | POST | `/api/services/<sid>/actions/<aid>` | 세션+CSRF | 서비스 액션 실행 |
 | POST | `/api/services/<sid>/kill_external` | 세션+CSRF | 확인된 외부 인스턴스 종료 |
+| POST | `/api/services/<sid>/cancel_recovery` | 세션+CSRF | 신호 없이 자동 복구 취소·중지 의도 저장 |
 | GET | `/api/services/<sid>/events` | 세션 | 최근 관측·명시적 작업 이력과 재시작 횟수 |
 | GET | `/api/services/<sid>/logs` | 세션 | 로그 tail 또는 offset 이후 조회 |
 | GET | `/api/services/<sid>/logs/stream` | 세션 | 서비스 로그 SSE |
@@ -406,6 +407,11 @@ PM2 모드는 자동 입양하지 않습니다. 진단 `ok`는 신원/health 검
 받았다는 뜻이 아닙니다. 외부 종료는 기존 신원·health 재검증을 모두 요구합니다.
 관리 밖 프로세스에 일반 시작/중지/재시작을 요청하면 `external_process_unmanaged`/409이며,
 명시적 외부 종료 성공은 대기 중인 daemon 복구에 대해 중지 의도로 보존합니다.
+`cancel_recovery`는 PM2 backend에서 `{ok:true,service:ServiceMeta}`를 반환합니다.
+실행 중 프로세스를 종료하지 않으며 향후 자동 시작만 취소합니다. 신원 불명의 외부
+프로세스에도 사용할 수 있습니다. 모든 명시적 조작은 의도 저장 실패 시
+`intent_persistence_failed`/409로 조작 전에 거부됩니다. 상태 파일 읽기 실패는
+`intent_state_unreadable`로 자동 시작을 막습니다.
 
 ```jsonc
 {

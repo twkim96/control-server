@@ -223,3 +223,122 @@ def test_kill_external_rejects_holder_change_before_first_signal(pm, monkeypatch
     with pytest.raises(ProcessError, match="health 확인 뒤 변경"):
         pm.kill_external(_make_service(port=12345))
     assert sent == []
+
+
+@pytest.fixture
+def simulated_external(pm, monkeypatch):
+    import process_manager as module
+
+    pid = 12345
+    state = {"birth": 10.0, "alive": True, "holder": True, "denied": False, "time": 0.0}
+    sent = []
+
+    class FakeProcess:
+        def __init__(self, _pid):
+            pass
+
+        def create_time(self):
+            if state["denied"]:
+                raise psutil.AccessDenied(pid)
+            return state["birth"]
+
+        def is_running(self):
+            return state["alive"]
+
+        def status(self):
+            return psutil.STATUS_RUNNING
+
+    monkeypatch.setattr(module.psutil, "Process", FakeProcess)
+    monkeypatch.setattr(module, "_find_port_holder", lambda _port: {"pid": pid} if state["holder"] else None)
+    monkeypatch.setattr(module, "_verify_destructive_identity", lambda *_args: None)
+    monkeypatch.setattr(module.os, "kill", lambda target, sig: sent.append((target, sig)))
+    monkeypatch.setattr(module.time, "sleep", lambda delay: state.__setitem__("time", state["time"] + delay))
+    pm._clock = lambda: state["time"]
+    evaluation = module.AdoptEvaluation(
+        diagnostics=module.AdoptDiagnostics(ok=True, reason="ok", candidate_pid=pid),
+        candidate=module._AdoptCandidate(pid=pid, pgid=pid, create_time=10.0),
+        state_snapshot=module.RuntimeState(),
+    )
+    return module, state, sent, evaluation
+
+
+def test_kill_external_rejects_reused_pid_before_signal(pm, simulated_external):
+    _, state, sent, evaluation = simulated_external
+    state["birth"] = 10.02
+    with pytest.raises(ProcessError, match="signal 전 변경"):
+        pm.kill_external(_make_service(port=12345), evaluation=evaluation)
+    assert sent == []
+
+
+def test_kill_external_waits_for_process_after_listener_closes(pm, monkeypatch, simulated_external):
+    module, state, sent, evaluation = simulated_external
+
+    def send(pid, sig):
+        sent.append((pid, sig))
+        state["holder"] = False
+
+    monkeypatch.setattr(module.os, "kill", send)
+    with pytest.raises(ProcessError, match="살아있습니다"):
+        pm.kill_external(_make_service(port=12345), evaluation=evaluation, poll_interval=1)
+    assert [sig for _, sig in sent] == [module.signal.SIGINT]
+
+
+def test_kill_external_inaccessible_after_signal_is_inconclusive(pm, monkeypatch, simulated_external):
+    module, state, sent, evaluation = simulated_external
+
+    def send(pid, sig):
+        sent.append((pid, sig))
+        state["denied"] = True
+
+    monkeypatch.setattr(module.os, "kill", send)
+    with pytest.raises(ProcessError, match="생존 여부를 확인할 수 없습니다"):
+        pm.kill_external(_make_service(port=12345), evaluation=evaluation)
+    assert len(sent) == 1
+
+
+def test_kill_external_succeeds_when_process_exits_after_listener_closes(pm, monkeypatch, simulated_external):
+    module, state, sent, evaluation = simulated_external
+
+    def send(pid, sig):
+        sent.append((pid, sig))
+        state["holder"] = False
+
+    def sleep(delay):
+        state["time"] += delay
+        state["alive"] = False
+
+    monkeypatch.setattr(module.os, "kill", send)
+    monkeypatch.setattr(module.time, "sleep", sleep)
+    result = pm.kill_external(_make_service(port=12345), evaluation=evaluation)
+    assert result["signal"] == "SIGINT"
+    assert len(sent) == 1
+
+
+def test_kill_external_rejects_forbidden_pid(pm, simulated_external):
+    _, _, sent, evaluation = simulated_external
+    with pytest.raises(ProcessError, match="종료할 수 없습니다"):
+        pm.kill_external(_make_service(port=12345), evaluation=evaluation, forbidden_pids={12345})
+    assert sent == []
+
+
+@pytest.mark.parametrize("executable,cwd", [("/other/python", "/tmp"), ("/usr/bin/python", "/other")])
+def test_destructive_identity_rejects_wrong_executable_or_cwd(monkeypatch, executable, cwd):
+    import process_manager as module
+
+    class FakeProcess:
+        def __init__(self, _pid):
+            pass
+
+        def cmdline(self):
+            return ["/other/python", "x.py"]
+
+        def cwd(self):
+            return cwd
+
+        def exe(self):
+            return executable
+
+    monkeypatch.setattr(module.psutil, "Process", FakeProcess)
+    service = replace(_make_service(port=12345), command=("/usr/bin/python", "x.py"))
+    with pytest.raises(ProcessError, match="실행 파일 또는 cwd"):
+        module._verify_destructive_identity(service, 12345, 10.0)

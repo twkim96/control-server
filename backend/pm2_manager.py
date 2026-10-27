@@ -60,6 +60,12 @@ class _RuntimeSnapshot(dict):
     daemon_id: str | None = None
 
 
+def _snapshot_copy(source):
+    copied = _RuntimeSnapshot(source)
+    copied.daemon_id = getattr(source, "daemon_id", None)
+    return copied
+
+
 Runner = Callable[[list[str], dict[str, str], float], CommandResult]
 
 _NAME_PREFIX = "server-control--"
@@ -367,7 +373,7 @@ class Pm2Manager:
                 and not self._snapshot_invalidated
                 and now - self._snapshot_at < self._ttl
             ):
-                return dict(self._snapshot)
+                return _snapshot_copy(self._snapshot)
 
             # Once one valid snapshot exists, read-only API traffic never waits
             # for the PM2 CLI. One daemon thread refreshes it while all readers
@@ -375,18 +381,21 @@ class Pm2Manager:
             # and still require a confirmed PM2 response.
             if nonblocking and not force:
                 self._start_background_refresh_locked(now)
-                return dict(self._snapshot)
+                return _snapshot_copy(self._snapshot)
 
             while self._snapshot_loading:
                 self._condition.wait(timeout=self._timeout)
                 now = self._clock()
                 if (
-                    self._snapshot_at
+                    not force
+                    and not self._snapshot_loading
+                    and self._snapshot_last_error is None
+                    and self._snapshot_at
                     and not self._snapshot_invalidated
                     and now - self._snapshot_at < self._ttl
                 ):
-                    return dict(self._snapshot)
-                if not self._snapshot_loading and not self._snapshot_at and self._snapshot_last_error:
+                    return _snapshot_copy(self._snapshot)
+                if not self._snapshot_loading and self._snapshot_last_error:
                     raise Pm2Error(self._snapshot_last_error)
             self._snapshot_loading = True
             self._snapshot_refresh_started_at = now
@@ -399,7 +408,7 @@ class Pm2Manager:
             raise
 
         self._finish_snapshot_refresh(fresh=fresh)
-        return dict(fresh)
+        return _snapshot_copy(fresh)
 
     def snapshot_diagnostics(self) -> dict[str, object]:
         """Safe PM2 read health for the API; never includes PM2 stdout/env."""
@@ -438,11 +447,32 @@ class Pm2Manager:
         with self._condition:
             return self._snapshot_daemon_id
 
+    def _verified_daemon_identity(self, value):
+        """PID file locates the daemon; the OS creation time identifies its life."""
+        try:
+            pid = int(value.split(":", 1)[0])
+            proc = psutil.Process(pid)
+            if proc.uids().real != os.getuid():
+                return None
+            title = " ".join(proc.cmdline())
+            if not title.startswith("PM2 ") or f"({self._runtime_root})" not in title:
+                return None
+            created = proc.create_time()
+            if proc.status() == psutil.STATUS_ZOMBIE:
+                return None
+            # Reject a PID-file change during OS inspection. Do not confuse it
+            # with process-list failure: normal status can still be displayed.
+            path = self._runtime_root / "pm2.pid"
+            if path.read_text().strip() != str(pid):
+                return None
+            return f"{pid}:{created}"
+        except (ValueError, OSError, psutil.Error):
+            return None
+
     def recovery_snapshot(self):
         """One fresh, successful observation, including the daemon boot identity."""
-        self.snapshot(force=True)
-        with self._condition:
-            return dict(self._snapshot), self._snapshot_daemon_id
+        fresh = self.snapshot(force=True)
+        return dict(fresh), fresh.daemon_id
 
     @staticmethod
     def runtime_identity_alive(pid, created_at):
@@ -468,7 +498,21 @@ class Pm2Manager:
                 and service.adopt_command is None):
             return None  # An exec wrapper's final argv must be declared.
         commands = [service.command] + ([service.adopt_command] if service.adopt_command else [])
-        executables = {os.path.realpath(shutil.which(command[0]) or command[0]) for command in commands}
+        def resolve(executable):
+            if "/" in executable:
+                path = Path(executable)
+                return os.path.realpath(path if path.is_absolute() else Path(service.cwd) / path)
+            return shutil.which(executable, path=service.env.get("PATH", os.environ.get("PATH", "")))
+        executables = {resolve(command[0]) for command in commands}
+        if None in executables:
+            return None
+        for executable in executables:
+            try:
+                with open(executable, "rb") as stream:
+                    if stream.read(2) == b"#!":
+                        return None  # Interpreter argv cannot be inferred safely.
+            except OSError:
+                return None
 
         def unrelated_executable(proc):
             try:
@@ -484,13 +528,12 @@ class Pm2Manager:
                     if unrelated_executable(proc):
                         continue
                     return None
-                if uids.real != os.getuid():
-                    continue
                 try:
                     if not _service_cmdline_match(service, proc.cmdline()):
                         continue
-                    if (os.path.realpath(proc.cwd()) == os.path.realpath(service.cwd)
-                            and proc.status() != psutil.STATUS_ZOMBIE):
+                    # Matching argv with changed cwd/uid is a conflict as well:
+                    # absence of the original cwd is not proof the app exited.
+                    if proc.status() != psutil.STATUS_ZOMBIE:
                         return True
                 except psutil.NoSuchProcess:
                     continue
@@ -670,6 +713,9 @@ class Pm2Manager:
         service_id = service if isinstance(service, str) else service.id
         with self._op_lock(service_id):
             state = self.get_process(service_id, force=True)
+            selected_service = service if isinstance(service, ServiceConfig) else self._active_services.get(service_id)
+            if selected_service is not None and (state is None or not state.alive):
+                self.assert_operation_ownership(selected_service)
             if state is None:
                 return RuntimeState()
             selected_service = (
@@ -818,13 +864,22 @@ class Pm2Manager:
             raise Pm2Error("external process helper is not configured")
         return self._external_helper.evaluate_external_identity(service, health_ok=health_ok)
 
+    def assert_operation_ownership(self, service):
+        """Shared guard for individual, grouped and automatic PM2 mutations."""
+        current = self.get_process(service.id, force=True)
+        if current is not None and current.alive:
+            return
+        if service.port is not None and find_port_holder(service.port) is not None:
+            raise Pm2Error("external_process_unmanaged")
+
     def try_adopt_all(self, services) -> list[str]:
         return []
 
     def kill_external(self, service: ServiceConfig, **kwargs):
         if self._external_helper is None:
             raise Pm2Error("external process helper is not configured")
-        managed = self.get_process(service.id, force=True)
+        snapshot = self.snapshot(force=True)
+        managed = snapshot.get(service.id)
         if managed is not None and managed.alive:
             raise Pm2Error(
                 f"{service.id} is managed by PM2 (pid={managed.pid}); external kill refused"
@@ -834,9 +889,15 @@ class Pm2Manager:
             raise Pm2Error(
                 f"{service.id}: 외부 종료 안전 검증 실패 ({evaluation.diagnostics.reason})"
             )
+        snapshot = self.snapshot(force=True)
+        forbidden = {p.pid for p in snapshot.values() if p.pid is not None}
+        forbidden.update(kwargs.pop("forbidden_pids", ()) or ())
+        if evaluation.candidate.pid in forbidden:
+            raise Pm2Error("외부 종료 대상은 PM2가 관리하는 프로세스입니다.")
         return self._external_helper.kill_external(
             service,
             evaluation=evaluation,
+            forbidden_pids=forbidden,
             **kwargs,
         )
 
@@ -861,7 +922,7 @@ class Pm2Manager:
                 continue
             daemon_id = item.get("control_pm2_daemon_id")
             if isinstance(daemon_id, str) and re.fullmatch(r"[1-9][0-9]*:[0-9]+(?:\.[0-9]+)?", daemon_id):
-                snapshot.daemon_id = daemon_id
+                snapshot.daemon_id = self._verified_daemon_identity(daemon_id)
                 continue
             name = item.get("name")
             if not isinstance(name, str):

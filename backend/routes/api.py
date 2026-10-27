@@ -26,6 +26,7 @@ from health_checker import HealthChecker, HealthResult
 from log_manager import LogManager
 from process_manager import ProcessError, ProcessManager, RuntimeState
 from resource_sampler import ResourceSampler
+from service_operations import OperationsError
 from service_registry import (
     ActionNotFoundError,
     ServiceNotFoundError,
@@ -204,6 +205,7 @@ def _trigger_action_locked(sid: str, aid: str):
     if (current_app.config.get("process_backend") == "pm2"
             and action.type in {"process_start", "process_stop", "process_restart"}):
         try:
+            pm.snapshot(force=True)
             observed = _health_checker().check(service, include_port_check=False, force_health_probe=True)
         except ProcessError as exc:
             return jsonify({"error": "process_error", "message": str(exc)}), 409
@@ -214,7 +216,6 @@ def _trigger_action_locked(sid: str, aid: str):
     try:
         operations = current_app.config.get("service_operations")
         if operations is not None:
-            from service_operations import OperationsError
             try:
                 if action.type in {"process_start", "process_restart"}:
                     operations.check_dependencies_ready(service)
@@ -223,11 +224,15 @@ def _trigger_action_locked(sid: str, aid: str):
             except OperationsError as exc:
                 return jsonify({"error": str(exc)}), 409
         if action.type == "process_start":
+            if operations is not None:
+                operations.prepare_intent(service, "start")
             state = pm.start(service)
             _log.info("start: %s pid=%s", sid, state.pid)
         elif action.type == "process_stop":
             if action.stop_strategy is None:
                 return jsonify({"error": "stop_strategy_missing"}), 500
+            if operations is not None:
+                operations.prepare_intent(service, "stop")
             pm.stop(service, action.stop_strategy)
             _log.info("stop: %s", sid)
         elif action.type == "process_restart":
@@ -238,6 +243,8 @@ def _trigger_action_locked(sid: str, aid: str):
             strategy = stop_action.stop_strategy if stop_action else None
             if strategy is None:
                 return jsonify({"error": "stop_strategy_missing_for_restart"}), 500
+            if operations is not None:
+                operations.prepare_intent(service, "restart")
             state = pm.restart(service, strategy)
             _log.info("restart: %s pid=%s", sid, state.pid)
         elif action.type == "health_check":
@@ -248,6 +255,8 @@ def _trigger_action_locked(sid: str, aid: str):
             pass
         else:
             return jsonify({"error": "unsupported_action_type", "type": action.type}), 400
+    except OperationsError as exc:
+        return jsonify({"error": str(exc)}), 409
     except ProcessError as exc:
         return jsonify({"error": "process_error", "message": str(exc)}), 409
 
@@ -332,7 +341,12 @@ def _kill_external_locked(sid: str):
 
     pm = _process_manager()
     try:
+        operations = current_app.config.get("service_operations")
+        if operations is not None:
+            operations.prepare_intent(service, "stop")
         result = pm.kill_external(service, expected_pid=health.unmanaged_pid)
+    except OperationsError as exc:
+        return jsonify({"error": str(exc)}), 409
     except ProcessError as exc:
         return jsonify({"error": "kill_external_failed", "message": str(exc)}), 409
 
@@ -354,6 +368,28 @@ def _kill_external_locked(sid: str):
             "service": _build_service_payload(service),
         }
     )
+
+
+@bp.post("/services/<sid>/cancel_recovery")
+@auth_required
+@csrf_required
+def cancel_recovery(sid):
+    """Cancel automatic starts without signaling an unmanaged process."""
+    from routes.config_api import _config_reconcile_lock
+    from service_operations import OperationsError
+    with _config_reconcile_lock:
+        try:
+            service = _registry().get(sid)
+        except ServiceNotFoundError:
+            return jsonify({"error": "service_not_found", "id": sid}), 404
+        operations = current_app.config.get("service_operations")
+        if operations is None or not operations.supported:
+            return jsonify({"error": "pm2_required"}), 409
+        try:
+            operations.cancel_recovery(service)
+        except (OperationsError, OSError):
+            return jsonify({"error": "intent_persistence_failed"}), 409
+        return jsonify({"ok": True, "service": _build_service_payload(service)})
 
 
 # ----------------------------------------------------------------------

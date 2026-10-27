@@ -17,6 +17,13 @@ export function getService(id: string): Promise<ServiceMeta> {
   return apiFetch<ServiceMeta>(`/api/services/${encodeURIComponent(id)}`);
 }
 
+export function cancelRecovery(id: string): Promise<ActionResponse> {
+  return apiFetch<ActionResponse>(
+    `/api/services/${encodeURIComponent(id)}/cancel_recovery`,
+    { method: "POST" },
+  );
+}
+
 export function getServiceEvents(id: string): Promise<ServiceEventsResponse> {
   return apiFetch<ServiceEventsResponse>(
     `/api/services/${encodeURIComponent(id)}/events`,

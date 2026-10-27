@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -897,8 +898,10 @@ class ProcessManager:
             return fail("already_tracked")
 
         holder = _find_port_holder(service.port)
-        if holder is None or holder.get("pid") is None:
+        if holder is None:
             return fail("policy_not_manage" if policy_not_manage else "no_port_holder")
+        if holder.get("pid") is None:
+            return fail("proc_inspect_failed")
         candidate_pid = int(holder["pid"])
 
         # status_only도 holder PID는 관찰 결과로 제공하되, 입양 신뢰 검증/commit은
@@ -1062,7 +1065,8 @@ class ProcessManager:
                 raise ProcessError("외부 종료 대상이 health 확인 뒤 변경되었습니다. 다시 확인하세요.")
             return self._kill_external_locked(
                 service,
-                expected_pid=diagnostics.candidate_pid,
+                expected_pid=evaluation.candidate.pid,
+                expected_create_time=evaluation.candidate.create_time,
                 forbidden_pids=forbidden_pids,
                 poll_interval=poll_interval,
             )
@@ -1072,6 +1076,7 @@ class ProcessManager:
         service: ServiceConfig,
         *,
         expected_pid: int | None,
+        expected_create_time: float | None,
         forbidden_pids: set[int] | None,
         poll_interval: float,
     ) -> dict[str, Any]:
@@ -1097,10 +1102,9 @@ class ProcessManager:
                 f"PID {target_pid}는 컨트롤 서버가 추적 중인 다른 서비스입니다. "
                 "외부 인스턴스 종료가 아니라 해당 서비스의 stop 액션을 사용하세요."
             )
-        try:
-            target_create_time = psutil.Process(target_pid).create_time()
-        except (psutil.NoSuchProcess, psutil.AccessDenied, OSError) as exc:
-            raise ProcessError(f"PID {target_pid}의 신원을 확인할 수 없습니다: {exc}") from exc
+        if expected_create_time is None:
+            raise ProcessError(f"PID {target_pid}의 생성 시간이 없어 신원을 확인할 수 없습니다.")
+        target_create_time = expected_create_time
 
         if forbidden_pids and target_pid in forbidden_pids:
             raise ProcessError(f"PID {target_pid}는 종료할 수 없습니다.")
@@ -1114,35 +1118,55 @@ class ProcessManager:
         last_signal = ""
 
         for sig, wait in sequence:
-            if not _external_identity_current(service.port, target_pid, target_create_time):
+            alive = _external_process_alive(target_pid, target_create_time)
+            if not alive:
                 if not last_signal:
                     raise ProcessError("외부 종료 대상이 signal 전 변경되었습니다. 다시 확인하세요.")
                 break
-            try:
-                os.kill(target_pid, sig)
-                last_signal = sig.name
-            except ProcessLookupError:
-                # 이미 죽었음
-                break
-            except PermissionError as exc:
-                raise ProcessError(
-                    f"PID {target_pid}에 시그널을 보낼 권한이 없습니다: {exc}"
-                ) from exc
+            holder = _find_port_holder(service.port)
+            holds_port = holder is not None and holder.get("pid") == target_pid
+            if not holds_port and not last_signal:
+                raise ProcessError("외부 종료 대상이 signal 전 변경되었습니다. 다시 확인하세요.")
+            if holds_port:
+                _verify_destructive_identity(service, target_pid, target_create_time)
+                holder = _find_port_holder(service.port)
+                if holder is None or holder.get("pid") != target_pid:
+                    if not last_signal:
+                        raise ProcessError("외부 종료 대상이 signal 전 변경되었습니다. 다시 확인하세요.")
+                    holds_port = False
+                elif not _external_process_alive(target_pid, target_create_time):
+                    if not last_signal:
+                        raise ProcessError("외부 종료 대상이 signal 전 변경되었습니다. 다시 확인하세요.")
+                    break
+            if holds_port:
+                try:
+                    os.kill(target_pid, sig)
+                    last_signal = sig.name
+                except ProcessLookupError:
+                    if not _external_process_alive(target_pid, target_create_time):
+                        if last_signal:
+                            break
+                        raise ProcessError("외부 종료 대상이 signal 전 변경되었습니다. 다시 확인하세요.")
+                    raise ProcessError(f"PID {target_pid}에 signal을 보낼 수 없습니다.")
+                except PermissionError as exc:
+                    raise ProcessError(
+                        f"PID {target_pid}에 시그널을 보낼 권한이 없습니다: {exc}"
+                    ) from exc
 
             # wait time 동안 polling으로 죽었는지 확인
             deadline = self._clock() + wait
             while self._clock() < deadline:
-                if not _external_identity_current(service.port, target_pid, target_create_time):
+                if not _external_process_alive(target_pid, target_create_time):
                     break
                 time.sleep(poll_interval)
 
-            if not _external_identity_current(service.port, target_pid, target_create_time):
+            if not _external_process_alive(target_pid, target_create_time):
                 break
 
         # 결과 검증
-        if _external_identity_current(service.port, target_pid, target_create_time):
+        if _external_process_alive(target_pid, target_create_time):
             raise ProcessError(
-                f"PID {target_pid} 종료 실패: SIGKILL 후에도 살아있습니다."
+                f"PID {target_pid} 종료 실패: 대기 시간 후에도 살아있습니다."
             )
 
         return {
@@ -1232,20 +1256,65 @@ def _group_leader_identity_is_current(state: RuntimeState) -> bool:
         return False
 
 
-def _external_identity_current(port: int, pid: int, create_time: float) -> bool:
-    """외부 종료 대상이 여전히 같은 port holder/PID identity인지 확인한다."""
-    holder = _find_port_holder(port)
-    if holder is None or holder.get("pid") != pid:
-        return False
+def _external_process_alive(pid: int, create_time: float) -> bool:
+    """Return whether the original process lives; inaccessible is inconclusive."""
     try:
         proc = psutil.Process(pid)
         return (
-            abs(proc.create_time() - create_time) <= 1.0
+            abs(proc.create_time() - create_time) < 0.01
             and proc.is_running()
             and proc.status() != psutil.STATUS_ZOMBIE
         )
-    except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+    except psutil.NoSuchProcess:
         return False
+    except (psutil.AccessDenied, OSError) as exc:
+        raise ProcessError(f"PID {pid}의 생존 여부를 확인할 수 없습니다: {exc}") from exc
+
+
+def _verify_destructive_identity(service: ServiceConfig, pid: int, create_time: float) -> None:
+    """Require configured cwd and resolved executable, independently of adoption shortcuts."""
+    try:
+        proc = psutil.Process(pid)
+        actual = list(proc.cmdline())
+        cwd = os.path.realpath(proc.cwd())
+        executable = os.path.realpath(proc.exe())
+        commands = [(list(service.command), False)]
+        wrapped = _tailscale_https_exec_command(service.command)
+        if wrapped:
+            commands.append((wrapped, False))
+        if service.adopt_command is not None:
+            commands.append((list(service.adopt_command), service.adopt_match == "prefix"))
+        path = service.env.get("PATH", os.environ.get("PATH", os.defpath))
+        search = os.pathsep.join(
+            p if os.path.isabs(p) else os.path.join(service.cwd, p)
+            for p in path.split(os.pathsep)
+        )
+
+        def resolve(head: str) -> str | None:
+            if os.path.dirname(head):
+                return head if os.path.isabs(head) else os.path.join(service.cwd, head)
+            return shutil.which(head, path=search)
+
+        for command, prefix in commands:
+            if not command or not actual:
+                continue
+            if (prefix and (len(command) < 2 or len(actual) < len(command))) or (
+                not prefix and len(actual) != len(command)
+            ):
+                continue
+            if command[1:] != actual[1:len(command)]:
+                continue
+            resolved = resolve(command[0])
+            actual_head = resolve(actual[0])
+            if (resolved and actual_head and os.path.realpath(resolved) == executable
+                    and os.path.realpath(actual_head) == executable
+                    and cwd == os.path.realpath(service.cwd)):
+                if _external_process_alive(pid, create_time):
+                    return
+                break
+    except (psutil.NoSuchProcess, psutil.AccessDenied, OSError) as exc:
+        raise ProcessError(f"PID {pid}의 종료 신원을 확인할 수 없습니다: {exc}") from exc
+    raise ProcessError(f"PID {pid}의 실행 파일 또는 cwd 신원이 일치하지 않습니다.")
 
 
 def _candidate_identity_is_alive(candidate: _AdoptCandidate) -> bool:

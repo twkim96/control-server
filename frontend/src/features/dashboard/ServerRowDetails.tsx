@@ -4,7 +4,7 @@ import { Button } from "../../components/Button";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { useToast } from "../../components/useToast";
 import { useAction } from "../../hooks/useAction";
-import { getService, getServiceEvents, killExternal } from "../../api/services";
+import { cancelRecovery, getService, getServiceEvents, killExternal } from "../../api/services";
 import type { ActionMeta, ActionType, AdoptDiagnostics, ServiceEventsResponse, ServiceMeta } from "../../types/service";
 import { describeError } from "../../utils/errors";
 import {
@@ -68,6 +68,11 @@ const RECOVERY_REASON: Record<string, string> = {
   dependency_missing: "선행 서비스를 찾을 수 없습니다.",
   pm2_start_failed: "PM2 시작에 실패했습니다.",
   readiness_failed: "서비스 준비 상태를 확인하지 못했습니다.",
+  intent_state_unreadable: "자동 복구 설정을 확인하지 못했습니다.",
+  intent_persistence_failed: "자동 복구 설정을 저장하지 못했습니다.",
+  daemon_identity_unavailable: "관리 프로세스를 확인하지 못했습니다.",
+  automatic_recovery_disabled: "자동 시작과 복구가 꺼져 있습니다.",
+  automatic_start_budget_exhausted: "자동 시작 재시도 한도에 도달했습니다.",
 };
 
 export function ServerRowDetails({ service, onMutated, onOpenLogs }: ServerRowDetailsProps) {
@@ -76,6 +81,7 @@ export function ServerRowDetails({ service, onMutated, onOpenLogs }: ServerRowDe
   const [confirm, setConfirm] = useState<ActionMeta | undefined>();
   const [killOpen, setKillOpen] = useState(false);
   const [killing, setKilling] = useState(false);
+  const [cancellingRecovery, setCancellingRecovery] = useState(false);
   const [events, setEvents] = useState<ServiceEventsResponse>();
   const [eventsError, setEventsError] = useState<string>();
   const [eventsLoading, setEventsLoading] = useState(false);
@@ -83,6 +89,7 @@ export function ServerRowDetails({ service, onMutated, onOpenLogs }: ServerRowDe
   const isExternal = !!service.runtime?.unmanaged;
   const canKillExternal = service.runtime?.state === "running_external";
   const externalPid = service.runtime?.unmanaged_pid ?? null;
+  const recovery = service.runtime?.daemon_recovery;
 
   const refreshEvents = useCallback(async () => {
     setEventsLoading(true);
@@ -185,11 +192,36 @@ export function ServerRowDetails({ service, onMutated, onOpenLogs }: ServerRowDe
               <ExternalDiagnostics
                 key={JSON.stringify([service.id, service.runtime?.state, externalPid, service.runtime?.health.ok])}
                 serviceId={service.id}
+                provided={service.runtime?.adopt_diagnostics}
               />
             </Detail>
           </div>
         )}
         <div className={classes.detailsActions}>
+          {recovery && (recovery.desired_state === "running" || isExternal) && (
+            <>
+              <Button
+                size="sm"
+                loading={cancellingRecovery}
+                disabled={cancellingRecovery}
+                onClick={async () => {
+                  setCancellingRecovery(true);
+                  try {
+                    await cancelRecovery(service.id);
+                    toast.push("자동 복구를 취소했습니다.", "success");
+                    onMutated();
+                  } catch (err) {
+                    toast.push(`자동 복구 취소 실패: ${describeError(err)}`, "error");
+                  } finally {
+                    setCancellingRecovery(false);
+                  }
+                }}
+              >
+                자동 복구 취소
+              </Button>
+              <span className={classes.detailValueMuted}>실행 중인 프로세스는 종료하지 않습니다.</span>
+            </>
+          )}
           {primaryActions.map((action) => {
             const isStart = action.type === "process_start";
             const isPrimary = isStart;
@@ -416,10 +448,11 @@ export function ServerRowDetails({ service, onMutated, onOpenLogs }: ServerRowDe
   );
 }
 
-function ExternalDiagnostics({ serviceId }: { serviceId: string }) {
+function ExternalDiagnostics({ serviceId, provided }: { serviceId: string; provided?: AdoptDiagnostics }) {
   const [diagnostics, setDiagnostics] = useState<AdoptDiagnostics>();
   const [error, setError] = useState<string>();
   useEffect(() => {
+    if (provided) return;
     let cancelled = false;
     void getService(serviceId)
       .then((detail) => {
@@ -429,19 +462,20 @@ function ExternalDiagnostics({ serviceId }: { serviceId: string }) {
         if (!cancelled) setError(describeError(err));
       });
     return () => { cancelled = true; };
-  }, [serviceId]);
-  if (error) return <span className={classes.detailValueMuted}>진단 조회 실패: {error}</span>;
-  if (!diagnostics) return <span className={classes.detailValueMuted}>진단 확인 중…</span>;
+  }, [serviceId, provided]);
+  const current = provided ?? diagnostics;
+  if (!current && error) return <span className={classes.detailValueMuted}>진단 조회 실패: {error}</span>;
+  if (!current) return <span className={classes.detailValueMuted}>진단 확인 중…</span>;
   return (
     <span className={classes.detailValueMuted}>
-      {diagnostics.reason}
-      {diagnostics.candidate_pid ? ` · candidate pid ${diagnostics.candidate_pid}` : ""}
-      {diagnostics.health_ok !== null ? ` · health=${diagnostics.health_ok ? "ok" : "failed"}` : ""}
-      {diagnostics.expected_command ? ` · expected: ${formatCommand(diagnostics.expected_command)}` : ""}
-      {diagnostics.adopt_command ? ` · adopt: ${formatCommand(diagnostics.adopt_command)}` : ""}
-      {diagnostics.actual_cmdline ? ` · actual: ${formatCommand(diagnostics.actual_cmdline)}` : ""}
-      {diagnostics.cwd_expected ? ` · cwd expected: ${diagnostics.cwd_expected}` : ""}
-      {diagnostics.cwd_actual ? ` · cwd actual: ${diagnostics.cwd_actual}` : ""}
+      {current.reason}
+      {current.candidate_pid ? ` · candidate pid ${current.candidate_pid}` : ""}
+      {current.health_ok !== null ? ` · health=${current.health_ok ? "ok" : "failed"}` : ""}
+      {current.expected_command ? ` · expected: ${formatCommand(current.expected_command)}` : ""}
+      {current.adopt_command ? ` · adopt: ${formatCommand(current.adopt_command)}` : ""}
+      {current.actual_cmdline ? ` · actual: ${formatCommand(current.actual_cmdline)}` : ""}
+      {current.cwd_expected ? ` · cwd expected: ${current.cwd_expected}` : ""}
+      {current.cwd_actual ? ` · cwd actual: ${current.cwd_actual}` : ""}
     </span>
   );
 }
@@ -486,8 +520,8 @@ function HealthLine({ service }: { service: ServiceMeta }) {
   }
   // health 결과를 먼저 본다. running_external은 alive=false라도 ok=true이다.
   if (health?.ok === true) {
-    if (service.runtime?.unmanaged && service.runtime.state !== "running_external") {
-      return <span className={classes.detailValueMuted}>응답 OK · identity 확인 안 됨 · {health.url}</span>;
+    if (service.runtime?.unmanaged) {
+      return <span className={classes.detailValueMuted}>외부 응답 OK · {health.url}</span>;
     }
     return (
       <span className={`${classes.detailValue} ${classes.detailHealthOk}`}>

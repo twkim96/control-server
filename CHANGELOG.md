@@ -7,6 +7,14 @@ the 1.5.0 public distribution release onward.
 
 ### Fixed
 
+- enforce durable intent before process mutations, migrate legacy stopped state before
+  autostart, and apply the same intent/conflict checks to automatic startup
+- reject stale forced snapshots after concurrent refresh failures, conservatively block
+  shebang launchers, and verify daemon lifetime using OS process creation time
+- preserve validated external process identity through termination, exclude other managed
+  PIDs, and require process exit rather than listener closure for success
+- provide signal-free automatic recovery cancellation and observation-only automatic-start mode
+
 - persist service running/stopped intent and recover missing managed services after a
   confirmed dedicated PM2 daemon replacement, with dependency order, bounded retries,
   manual-stop precedence and duplicate-process checks

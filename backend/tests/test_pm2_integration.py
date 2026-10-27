@@ -439,3 +439,42 @@ def test_daemon_signal_recovery_preserves_running_and_stopped_intent(tmp_path: P
             except psutil.NoSuchProcess:
                 pass
         shutil.rmtree(runtime, ignore_errors=True)
+
+
+def test_startup_lifecycle_blocks_live_shebang_orphan_before_listen(tmp_path: Path) -> None:
+    """A live launcher that has not opened its port must not be spawned twice."""
+    from types import SimpleNamespace
+    import app as backend_app
+    from health_checker import HealthChecker
+    from service_operations import ServiceOperations
+    launcher=tmp_path/'start-worker'
+    count=tmp_path/'launch-count'
+    launcher.write_text('#!/usr/bin/python3\nimport time,pathlib\n'
+        f'with pathlib.Path({str(count)!r}).open("a") as f: f.write("launch\\n")\n'
+        'while True: time.sleep(0.1)\n')
+    launcher.chmod(0o755)
+    orphan=subprocess.Popen([str(launcher)],cwd=tmp_path,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+    runtime=Path(tempfile.mkdtemp(prefix='sc-shebang-',dir='/private/tmp'))
+    wrapper=Path(__file__).resolve().parents[2]/'scripts/pm2ctl.sh'
+    service=replace(_service(tmp_path,_free_port()),command=(str(launcher),),
+                    lifecycle=replace(_service(tmp_path,1).lifecycle,autostart=True))
+    registry=SimpleNamespace(list_services=lambda:(service,),get=lambda _:service)
+    manager=Pm2Manager(runtime,tmp_path/'logs',wrapper=wrapper)
+    manager.activate_service(service)
+    health=HealthChecker(manager)
+    ops=ServiceOperations(registry,manager,health,runtime)
+    try:
+        deadline=time.monotonic()+3
+        while not count.exists() and time.monotonic()<deadline:time.sleep(0.03)
+        assert count.read_text()=='launch\n'
+        backend_app._run_startup_lifecycle(registry,manager,ops)
+        assert orphan.poll() is None
+        assert manager.get_process(service.id,force=True) is None
+        assert count.read_text()=='launch\n'
+    finally:
+        ops.shutdown();manager.shutdown();health._executor.shutdown(wait=True)
+        orphan.terminate();orphan.wait(timeout=5)
+        env=os.environ.copy();env['CONTROL_PM2_HOME']=str(runtime/'pm2')
+        subprocess.run([str(wrapper),'kill'],env=env,stdin=subprocess.DEVNULL,
+                       stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=20,check=False)
+        shutil.rmtree(runtime,ignore_errors=True)

@@ -187,7 +187,8 @@ class HealthChecker:
             diagnostics = adoption_evaluation.diagnostics if adoption_evaluation else None
             unmanaged_pid = diagnostics.candidate_pid if diagnostics else None
             endpoint_observed = health_info.get("ok") is True or "status_code" in health_info
-            unmanaged = unmanaged_pid is not None or endpoint_observed
+            holder_unknown = bool(diagnostics and diagnostics.reason == "proc_inspect_failed")
+            unmanaged = unmanaged_pid is not None or endpoint_observed or holder_unknown
             identity_verified = bool(
                 adoption_evaluation
                 and adoption_evaluation.candidate is not None

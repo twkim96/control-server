@@ -106,6 +106,8 @@ class ServiceOperations:
         self._jobs = OrderedDict()
         self._action_generations = {}
         self._job_intents = {}
+        self._state_error = None
+        self._automatic_enabled = os.environ.get("CONTROL_PM2_AUTOMATIC_START", "1") != "0"
         self._history = self._load()
 
     def _load(self):
@@ -113,21 +115,31 @@ class ServiceOperations:
         try:
             # Bound corrupt input before parsing; normally this file is much smaller.
             if self.path.stat().st_size > 8 * 1024 * 1024:
+                self._state_error = "intent_state_unreadable"
                 return {}
             raw = json.loads(self.path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return {}
         except (OSError, ValueError):
+            self._state_error = "intent_state_unreadable"
             return {}
         if not isinstance(raw, dict):
+            self._state_error = "intent_state_unreadable"
+            return {}
+        if type(raw.get("_schema_version", 1)) is not int or raw.get("_schema_version", 1) != 1:
+            self._state_error = "intent_state_unreadable"
             return {}
         result = {}
         for service in self.registry.list_services():
             item = raw.get(service.id)
             if not isinstance(item, dict):
+                if service.id in raw:
+                    self._state_error = "intent_state_unreadable"
                 continue
             events = []
             source = item.get("events", [])
             for event in source[-self.EVENT_LIMIT:] if isinstance(source, list) else []:
-                if not isinstance(event, dict) or event.get("type") not in _MESSAGES:
+                if not isinstance(event, dict) or not isinstance(event.get("type"), str) or event.get("type") not in _MESSAGES:
                     continue
                 if not _number(event.get("at")):
                     continue
@@ -143,15 +155,23 @@ class ServiceOperations:
             clean_item = {"events": events, "restart_count": 0,
                           "last_exit_code": None, "last_exit_time": None, "recovery_attempts": [],
                           "last_recovery_attempt": None}
-            if item.get("desired_state") in {"running", "stopped"}:
+            if isinstance(item.get("desired_state"), str) and item.get("desired_state") in {"running", "stopped"}:
                 clean_item["desired_state"] = item["desired_state"]
+            elif "desired_state" in item:
+                self._state_error = "intent_state_unreadable"
+            else:
+                for event in reversed(events):
+                    if event["type"] in {"start", "stop", "restart"}:
+                        clean_item["desired_state"] = "stopped" if event["type"] == "stop" else "running"
+                        clean_item["definition_id"] = _definition_id(service)
+                        break
             for key in ("definition_id", "daemon_id"):
                 value = item.get(key)
                 if isinstance(value, str) and len(value) <= 128:
                     clean_item[key] = value
-            if item.get("daemon_restore_status") in {"pending", "restoring", "restored", "blocked", "failed"}:
+            if isinstance(item.get("daemon_restore_status"), str) and item.get("daemon_restore_status") in {"pending", "restoring", "restored", "blocked", "failed"}:
                 clean_item["daemon_restore_status"] = item["daemon_restore_status"]
-            if item.get("daemon_restore_reason") in {
+            if isinstance(item.get("daemon_restore_reason"), str) and item.get("daemon_restore_reason") in {
                 "definition_changed", "existing_pm2_entry", "previous_process_unconfirmed",
                 "external_port_occupied", "dependency_not_ready", "dependency_missing",
                 "pm2_start_failed", "readiness_failed",
@@ -159,6 +179,11 @@ class ServiceOperations:
                 clean_item["daemon_restore_reason"] = item["daemon_restore_reason"]
             if _number(item.get("daemon_restore_at")):
                 clean_item["daemon_restore_at"] = item["daemon_restore_at"]
+            if isinstance(item.get("startup_blocked_reason"), str) and item["startup_blocked_reason"] in {
+                "previous_process_unconfirmed", "definition_changed", "automatic_recovery_disabled",
+                "automatic_start_budget_exhausted", "dependency_not_ready", "readiness_failed",
+            }:
+                clean_item["startup_blocked_reason"] = item["startup_blocked_reason"]
             if type(item.get("daemon_restore_attempts")) is int:
                 clean_item["daemon_restore_attempts"] = max(0, min(3, item["daemon_restore_attempts"]))
             if type(item.get("owned_pid")) is int and item["owned_pid"] > 0:
@@ -186,6 +211,8 @@ class ServiceOperations:
 
     def _persist(self):
         """Called under _lock; replace a private file without exposing partial JSON."""
+        if self._state_error:
+            raise OSError("intent state unavailable; preserve original file")
         active = {s.id for s in self.registry.list_services()}
         self._history = {sid: entry for sid, entry in self._history.items() if sid in active}
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -193,10 +220,15 @@ class ServiceOperations:
         fd, name = tempfile.mkstemp(prefix=".events-", dir=self.path.parent)
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as stream:
-                json.dump(self._history, stream, separators=(",", ":"), allow_nan=False)
+                json.dump({**self._history, "_schema_version": 1}, stream, separators=(",", ":"), allow_nan=False)
                 stream.flush()
                 os.fsync(stream.fileno())
             os.replace(name, self.path)
+            directory_fd = os.open(self.path.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
         finally:
             if os.path.exists(name):
                 os.unlink(name)
@@ -237,7 +269,9 @@ class ServiceOperations:
                 entry["daemon_id"] = identity
             entry.pop("daemon_restore_status", None)
             entry.pop("daemon_restore_reason", None)
-            entry["daemon_restore_attempts"] = 0
+            entry.pop("startup_blocked_reason", None)
+            if explicit:
+                entry["daemon_restore_attempts"] = 0
             if action != "stop":
                 self._remember_identity(service_id, entry)
             self._failures.pop(service_id, None)
@@ -245,6 +279,36 @@ class ServiceOperations:
                 self._persist()
             except OSError:
                 _log.warning("Service action succeeded but history persistence failed (details withheld)")
+
+    def prepare_intent(self, service, action):
+        """Write intent before signaling/spawning; failed writes forbid mutation."""
+        with self._lock:
+            if self._state_error:
+                raise OperationsError(self._state_error)
+            entry = self._entry(service.id)
+            entry["desired_state"] = "stopped" if action == "stop" else "running"
+            entry["definition_id"] = _definition_id(service)
+            self._action_generations[service.id] = self._action_generations.get(service.id, 0) + 1
+            entry.pop("daemon_restore_status", None)
+            entry.pop("daemon_restore_reason", None)
+            entry.pop("startup_blocked_reason", None)
+            self._failures.pop(service.id, None)
+            entry["daemon_restore_attempts"] = 0
+            entry.pop("daemon_restore_at", None)
+            try:
+                self._persist()
+            except OSError as exc:
+                # Do not mutate after a failed commit. Also block this controller's
+                # automatic operations; its on-disk old state is unchanged.
+                self._state_error = "intent_persistence_failed"
+                raise OperationsError(self._state_error) from exc
+
+    def cancel_recovery(self, service):
+        """Persist stop intent without sending any signal to an external app."""
+        with self._mutation(service):
+            self.prepare_intent(service, "stop")
+            self._event(service.id, "stop")
+            self._persist()
 
     def _maintenance(self):
         root = self.runtime / "pm2-engine"
@@ -359,18 +423,31 @@ class ServiceOperations:
                     raise OperationsError("dependency_used_outside_group")
 
     def _mutate(self, service, action, selected, bound, *, requested_action=None,
-                enforce_controls=True, intent_versions=None):
+                enforce_controls=True, intent_versions=None, automatic=False):
         with self._mutation(service):
             self._check_intent(service, intent_versions)
             if enforce_controls:
                 self._require_action(service, requested_action or action)
+            guard = getattr(self.pm, "assert_operation_ownership", None)
+            if callable(guard):
+                guard(service)
             if action == "start":
                 self._dependencies_ready(service, bound)
                 if not self._online(service.id):
+                    if automatic:
+                        self._automatic_start_allowed(service)
+                        self._reserve_automatic_start(service)
+                    else:
+                        self.prepare_intent(service, "start")
+                        if intent_versions is not None:
+                            intent_versions[service.id] = self._action_generations[service.id]
                     self.pm.start(service)
                     self.record_action(service.id, "start", explicit=False)
             else:
                 self._refuse_external_dependents(service, selected)
+                self.prepare_intent(service, "restart" if requested_action == "restart" else "stop")
+                if intent_versions is not None:
+                    intent_versions[service.id] = self._action_generations[service.id]
                 self.pm.stop(service)
                 self.record_action(service.id, "restart" if requested_action == "restart" else "stop", explicit=False)
         if action == "start":
@@ -474,10 +551,24 @@ class ServiceOperations:
 
     def autostart(self):
         """Production PM2 startup: never implicitly select autostart:false dependencies."""
-        with self._lock:
-            selected = tuple(s for s in self.registry.list_services()
-                             if s.lifecycle.autostart
-                             and self._history.get(s.id, {}).get("desired_state") != "stopped")
+        # Migrate stopped membership before selecting any launch candidates.
+        with _config_reconcile_lock:
+            recovery_snapshot = getattr(self.pm, "recovery_snapshot", None)
+            snapshot = recovery_snapshot()[0] if callable(recovery_snapshot) else self.pm.snapshot()
+            with self._lock:
+                if self._state_error:
+                    return
+                for service in self.registry.list_services():
+                    process = snapshot.get(service.id)
+                    if process is not None and process.status == "stopped":
+                        entry = self._entry(service.id)
+                        entry["desired_state"] = "stopped"
+                        entry["definition_id"] = _definition_id(service)
+                self._persist()
+                selected = tuple(s for s in self.registry.list_services()
+                                 if s.lifecycle.autostart
+                                 and self._history.get(s.id, {}).get("desired_state") != "stopped")
+                versions = {s.id: self._action_generations.get(s.id, 0) for s in selected}
         ordered = dependency_order(selected)
         bound = {s.id: s for s in selected}
         failed = set()
@@ -489,9 +580,22 @@ class ServiceOperations:
                 continue
             for attempt in range(3):
                 try:
-                    self._mutate(service, "start", set(bound), bound, enforce_controls=False)
+                    self._mutate(service, "start", set(bound), bound, enforce_controls=False,
+                                 intent_versions=versions, automatic=True)
                     break
-                except OperationsError:
+                except OperationsError as exc:
+                    # Startup blocking is diagnostic only; it must not create a
+                    # daemon-replacement recovery ticket on the same daemon.
+                    if str(exc) != "intervening_manual_action":
+                        with self._lock:
+                            reason = str(exc)
+                            entry = self._entry(service.id)
+                            entry["startup_blocked_reason"] = reason if reason in {
+                                "previous_process_unconfirmed", "definition_changed", "automatic_recovery_disabled",
+                                "automatic_start_budget_exhausted", "dependency_not_ready",
+                            } else "readiness_failed"
+                            if not self._state_error:
+                                self._persist()
                     failed.add(service.id)
                     break
                 except Exception:
@@ -503,9 +607,47 @@ class ServiceOperations:
     def recovery_status(self, sid):
         with self._lock:
             entry = self._entry(sid)
+            unavailable = (hasattr(self.pm, "daemon_identity") and self.pm.daemon_identity() is None)
             return {"desired_state": entry.get("desired_state"),
-                    "status": entry.get("daemon_restore_status"),
-                    "reason": entry.get("daemon_restore_reason")}
+                    "status": "blocked" if self._state_error or entry.get("startup_blocked_reason") else entry.get("daemon_restore_status"),
+                    "reason": self._state_error or entry.get("startup_blocked_reason") or entry.get("daemon_restore_reason") or (
+                        "automatic_recovery_disabled" if not self._automatic_enabled else
+                        "daemon_identity_unavailable" if unavailable else None)}
+
+    def _automatic_start_allowed(self, service):
+        if not self._automatic_enabled:
+            raise OperationsError("automatic_recovery_disabled")
+        if self._state_error:
+            raise OperationsError(self._state_error)
+        entry = self._entry(service.id)
+        if entry.get("desired_state") == "stopped":
+            raise OperationsError("intervening_manual_action")
+        if entry.get("definition_id") and entry["definition_id"] != _definition_id(service):
+            raise OperationsError("definition_changed")
+        conflict = getattr(self.pm, "recovery_process_conflict", None)
+        if callable(conflict):
+            if service.port is None or conflict(service) is not False:
+                raise OperationsError("previous_process_unconfirmed")
+        if entry.get("owned_pid") is not None:
+            inspect = getattr(self.pm, "runtime_identity_alive", None)
+            if not callable(inspect) or inspect(entry["owned_pid"], entry.get("owned_created_at")) is not False:
+                raise OperationsError("previous_process_unconfirmed")
+
+    def _reserve_automatic_start(self, service):
+        entry = self._entry(service.id)
+        identity = getattr(self.pm, "daemon_identity", lambda: None)()
+        if identity is not None and identity != entry.get("daemon_id"):
+            entry["daemon_id"] = identity
+            entry["daemon_restore_attempts"] = 0
+            entry.pop("daemon_restore_at", None)
+        if (entry.get("daemon_restore_attempts", 0) >= 3
+                or self.clock() - entry.get("daemon_restore_at", 0) < 60):
+            raise OperationsError("automatic_start_budget_exhausted")
+        entry["daemon_restore_attempts"] = entry.get("daemon_restore_attempts", 0) + 1
+        entry["daemon_restore_at"] = self.clock()
+        entry["desired_state"] = "running"
+        entry["definition_id"] = _definition_id(service)
+        self._persist()
 
     def _remember_identity(self, sid, entry):
         getter = getattr(self.pm, "get_state_readonly", None)
@@ -522,6 +664,8 @@ class ServiceOperations:
         PM2 port/definition checks remain authoritative; failed recovery is visible.
         """
         if daemon_id is None:
+            return
+        if self._state_error:
             return
         sid = service.id
         with self._mutation(service):
@@ -553,18 +697,17 @@ class ServiceOperations:
                     return
                 version = {sid: self._action_generations.get(sid, 0)}
                 if entry.get("definition_id") != _definition_id(service):
-                    if status != "blocked":
+                    if entry.get("daemon_restore_reason") != "definition_changed":
                         entry["daemon_restore_status"] = "blocked"
                         entry["daemon_restore_reason"] = "definition_changed"
                         self._event(sid, "daemon_restore_blocked")
                         self._persist()
                     return
-                if (entry.get("daemon_restore_attempts", 0) >= 3
-                        or self.clock() - entry.get("daemon_restore_at", 0) < 60):
-                    return
             # Never undo a current stopped/errored PM2 entry. Only an absent app
             # lost with the daemon is eligible; an online restoration is verified.
             fresh = self.pm.get_process(sid, force=True)
+            if getattr(self.pm, "daemon_identity", lambda: daemon_id)() != daemon_id:
+                return
             if fresh is not None and not fresh.alive:
                 with self._lock:
                     if status != "blocked":
@@ -576,12 +719,15 @@ class ServiceOperations:
             try:
                 self._dependencies_ready(service)
                 if fresh is None:
+                    if (entry.get("daemon_restore_attempts", 0) >= 3
+                            or self.clock() - entry.get("daemon_restore_at", 0) < 60):
+                        return
+                    self._automatic_start_allowed(service)
                     inspect_identity = getattr(self.pm, "runtime_identity_alive", None)
                     if (service.port is None or not callable(inspect_identity)
                             or inspect_identity(entry.get("owned_pid"), entry.get("owned_created_at")) is not False):
                         raise OperationsError("previous_process_unconfirmed")
-                    inspect_conflict = getattr(self.pm, "recovery_process_conflict", None)
-                    if not callable(inspect_conflict) or inspect_conflict(service) is not False:
+                    if not callable(getattr(self.pm, "recovery_process_conflict", None)):
                         raise OperationsError("previous_process_unconfirmed")
                     # Check conflicts before consuming a retry. No automatic kill.
                     if service.port is not None:
@@ -655,6 +801,10 @@ class ServiceOperations:
         cfg = getattr(service, "recovery", None)
         sid = service.id
         with self._lock:
+            if (not self._automatic_enabled or self._state_error
+                    or self._entry(sid).get("desired_state") == "stopped"):
+                self._failures.pop(sid, None)
+                return
             busy = any(job["status"] in {"queued", "running"} for job in self._jobs.values())
         if busy:
             self._failures.pop(sid, None)
@@ -682,6 +832,10 @@ class ServiceOperations:
         if count < cfg.failure_threshold:
             return
         with self._mutation(service):
+            with self._lock:
+                if self._state_error or self._entry(sid).get("desired_state") == "stopped":
+                    self._failures.pop(sid, None)
+                    return
             current = self.pm.get_process(sid, force=True)
             state = self.pm.get_state_readonly(sid)
             if (not current or current.status != "online" or current.pid != identity[1]

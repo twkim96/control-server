@@ -508,4 +508,38 @@ def test_managed_actions_refuse_unmanaged_process_instead_of_false_success(tmp_p
     response = client.post(f"/api/services/dummy/actions/{action}", headers={"X-CSRF-Token": csrf})
     assert response.status_code == 409
     assert response.get_json()["error"] == "external_process_unmanaged"
-    assert fake.commands == []
+    assert all(command[0] == "jlist" for command in fake.commands)
+
+
+def test_cancel_recovery_saves_stop_without_sending_process_command(tmp_path, monkeypatch):
+    monkeypatch.setenv(PASSWORD_ENV, "secret")
+    config = tmp_path / "config.yml"
+    _config(config, tmp_path)
+    fake = FakePm2()
+    app = backend_app.create_app(config_path=config, log_dir=tmp_path / "logs",
+        runtime_dir=tmp_path / "runtime", frontend_dist=tmp_path / "dist",
+        process_backend="pm2", pm2_runner=fake)
+    client = app.test_client()
+    csrf = _login(client)
+    response = client.post('/api/services/dummy/cancel_recovery', headers={"X-CSRF-Token":csrf})
+    assert response.status_code == 200
+    assert response.get_json()["service"]["runtime"]["daemon_recovery"]["desired_state"] == "stopped"
+    assert all(cmd[0] == "jlist" for cmd in fake.commands)
+    stored = json.loads((tmp_path / "runtime/service-operations/events.json").read_text())
+    assert stored["dummy"]["desired_state"] == "stopped"
+
+
+def test_stop_write_failure_returns_error_before_pm2_stop(tmp_path, monkeypatch):
+    monkeypatch.setenv(PASSWORD_ENV, "secret")
+    config=tmp_path/'config.yml'
+    _config(config,tmp_path)
+    fake=FakePm2()
+    app=backend_app.create_app(config_path=config,log_dir=tmp_path/'logs',
+        runtime_dir=tmp_path/'runtime',frontend_dist=tmp_path/'dist',process_backend='pm2',pm2_runner=fake)
+    client=app.test_client();csrf=_login(client)
+    def fail():raise OSError('disk full')
+    monkeypatch.setattr(app.config['service_operations'],'_persist',fail)
+    response=client.post('/api/services/dummy/actions/stop',headers={'X-CSRF-Token':csrf})
+    assert response.status_code == 409
+    assert response.get_json()['error']=='intent_persistence_failed'
+    assert all(cmd[0]=='jlist' for cmd in fake.commands)

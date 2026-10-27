@@ -419,31 +419,21 @@ def test_readiness_rejects_stopped_or_errored_without_restart(tmp_path, status):
     assert health.calls == 0
 
 
-def test_history_disk_failure_does_not_fail_successful_action_or_lose_intent(tmp_path, monkeypatch):
-    import errno
+def test_intent_disk_failure_blocks_stop_before_any_process_mutation(tmp_path, monkeypatch):
     s = service()
-    ops, pm, _, _ = operations(tmp_path, [s])
+    ops, pm, health, clock = operations(tmp_path, [s])
     pm.put(s.id)
-    original_mutate = ops._mutate
-
+    ops.record_action(s.id, "start")
     def full_disk():
-        raise OSError(errno.ENOSPC, "SECRET_STORAGE_PATH")
-
-    def manual_stop_before_restart_start(svc, action, *args, **kwargs):
-        if action == "start":
-            with ops._mutation(svc):
-                pm.stop(svc)
-                ops.record_action(svc.id, "stop")
-        return original_mutate(svc, action, *args, **kwargs)
-
+        raise OSError("SECRET_STORAGE_PATH")
     monkeypatch.setattr(ops, "_persist", full_disk)
-    ops._mutate = manual_stop_before_restart_start
-    result = finish(ops, ops.submit_group("apps", "restart"))
-    assert result["results"][0]["message"] == "intervening_manual_action"
-    assert all(action == "stop" for action, _ in pm.calls)
-    # Explicit action recording also succeeds outside a group after a disk error.
-    ops.record_action(s.id, "stop")
-    assert ops.events(s.id)["events"][-1]["type"] == "stop"
+    result = finish(ops, ops.submit_group("apps", "stop"))
+    assert result["results"][0]["message"] == "intent_persistence_failed"
+    assert pm.calls == []
+    assert pm.processes[s.id].alive
+    assert ops.recovery_status(s.id)["reason"] == "intent_persistence_failed"
+    reloaded = ServiceOperations(ops.registry, pm, health, tmp_path, clock=clock, monotonic_clock=clock)
+    assert reloaded.recovery_status(s.id)["desired_state"] == "running"
 
 
 def test_definition_change_blocks_queued_mutation_and_jobs_bounded(tmp_path):
@@ -687,3 +677,102 @@ def test_newer_nonlistening_orphan_blocks_daemon_recovery(tmp_path, monkeypatch)
     ops.poll_once()
     assert pm.calls == []
     assert ops.recovery_status(s.id)["reason"] == "previous_process_unconfirmed"
+
+
+def test_autostart_selected_before_manual_stop_does_not_override_it(tmp_path):
+    import app as backend_app
+    s = service(autostart=True)
+    ops, pm, _, _ = operations(tmp_path, [s])
+    selected, release = threading.Event(), threading.Event()
+    original = ops._mutate
+    def paused(*args, **kwargs):
+        selected.set()
+        assert release.wait(2)
+        return original(*args, **kwargs)
+    ops._mutate = paused
+    # Exercise the app's startup lifecycle rather than invoking observer directly.
+    pm.supports_adoption = False
+    thread = threading.Thread(target=backend_app._run_startup_lifecycle, args=(ops.registry, pm, ops))
+    thread.start()
+    assert selected.wait(1)
+    ops.cancel_recovery(s)
+    release.set()
+    thread.join(3)
+    ops.shutdown()
+    assert not thread.is_alive()
+    assert pm.calls == []
+    assert ops.recovery_status(s.id)["desired_state"] == "stopped"
+
+
+@pytest.mark.parametrize("raw", ['not-json', '[]', '{"one":{"desired_state":[]}}', '{"one":false}'])
+def test_corrupt_intent_blocks_autostart_and_preserves_original_file(tmp_path, raw):
+    s = service(autostart=True)
+    ops, pm, health, clock = operations(tmp_path, [s])
+    ops.path.parent.mkdir(parents=True)
+    ops.path.write_text(raw)
+    reloaded = ServiceOperations(ops.registry, pm, health, tmp_path, clock=clock, monotonic_clock=clock)
+    reloaded.autostart()
+    assert pm.calls == []
+    assert reloaded.recovery_status(s.id)["reason"] == "intent_state_unreadable"
+    assert ops.path.read_text() == raw
+
+
+def test_legacy_stop_event_and_pm2_stopped_membership_migrate_before_autostart(tmp_path):
+    a, b = service("a", autostart=True), service("b", autostart=True)
+    ops, pm, health, clock = operations(tmp_path, [a, b])
+    ops.path.parent.mkdir(parents=True)
+    ops.path.write_text(json.dumps({"a":{"events":[{"type":"stop", "at":900}]}}))
+    pm.put("b", online=False)
+    reloaded = ServiceOperations(ops.registry, pm, health, tmp_path, clock=clock, monotonic_clock=clock)
+    reloaded.autostart()
+    assert pm.calls == []
+    assert all(reloaded.recovery_status(s.id)["desired_state"] == "stopped" for s in (a,b))
+
+
+def test_stop_intent_survives_process_failure_and_blocks_health_recovery(tmp_path):
+    s = service(recovery=RecoveryConfig(True, 1))
+    ops, pm, health, clock = operations(tmp_path, [s])
+    pm.put(s.id)
+    health.ok[s.id] = False
+    ops.prepare_intent(s, "stop")
+    reloaded = ServiceOperations(ops.registry, pm, health, tmp_path, clock=clock, monotonic_clock=clock)
+    reloaded.poll_once()
+    assert pm.calls == []
+    assert reloaded.recovery_status(s.id)["desired_state"] == "stopped"
+
+
+def test_group_stop_with_unmanaged_process_cannot_report_success(tmp_path):
+    from pm2_manager import Pm2Error
+    s = service()
+    ops, pm, _, _ = operations(tmp_path, [s])
+    def external(_):
+        raise Pm2Error("external_process_unmanaged")
+    pm.assert_operation_ownership = external
+    result = finish(ops, ops.submit_group("apps", "stop"))
+    assert result["status"] == "failed"
+    assert pm.calls == []
+
+
+def test_stop_intent_arriving_during_health_probe_blocks_restart(tmp_path):
+    s = service(recovery=RecoveryConfig(True,1))
+    ops, pm, health, _ = operations(tmp_path,[s])
+    pm.put(s.id)
+    health.ok[s.id] = False
+    def cancel(_):
+        health.on_probe = None
+        ops.cancel_recovery(s)
+    health.on_probe=cancel
+    ops.poll_once()
+    assert pm.calls == []
+
+
+def test_observation_only_switch_blocks_all_automatic_start_paths(tmp_path, monkeypatch):
+    monkeypatch.setenv('CONTROL_PM2_AUTOMATIC_START','0')
+    s=service(autostart=True,recovery=RecoveryConfig(True,1))
+    ops,pm,health,_=operations(tmp_path,[s])
+    ops.autostart()
+    assert pm.calls == []
+    pm.put(s.id)
+    health.ok[s.id]=False
+    ops.poll_once()
+    assert pm.calls == []

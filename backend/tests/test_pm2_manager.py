@@ -893,6 +893,7 @@ def test_snapshot_retains_daemon_identity_even_with_no_apps(tmp_path):
         [{"control_pm2_daemon_id": "123:789"}],
     ])
     manager = _manager(tmp_path, lambda *_: CommandResult(0, json.dumps(next(replies)), ""))
+    manager._verified_daemon_identity = lambda value: value
     assert manager.recovery_snapshot() == ({}, "123:456.25")
     assert manager.recovery_snapshot() == ({}, "123:789")
     assert manager.daemon_identity() == "123:789"
@@ -902,6 +903,7 @@ def test_failed_snapshot_never_becomes_authoritative_daemon_recovery(tmp_path):
     replies = iter([CommandResult(0, '[{"control_pm2_daemon_id":"123:456"}]', ""),
                     CommandResult(1, "[]", "")])
     manager = _manager(tmp_path, lambda *_: next(replies))
+    manager._verified_daemon_identity = lambda value: value
     manager.recovery_snapshot()
     with pytest.raises(Pm2Error):
         manager.recovery_snapshot()
@@ -931,3 +933,78 @@ def test_recovery_without_any_matching_orphan_can_proceed(tmp_path):
         assert Pm2Manager.recovery_process_conflict(_service(tmp_path)) is False
     shell = replace(_service(tmp_path), command=("bash", "run.sh"))
     assert Pm2Manager.recovery_process_conflict(shell) is None
+
+
+def test_forced_waiter_rejects_failed_refresh_instead_of_cached_success(tmp_path):
+    entered, release = threading.Event(), threading.Event()
+    calls = 0
+    def runner(*_):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return CommandResult(0, '[{"control_pm2_daemon_id":"123:1"}]', "")
+        entered.set()
+        assert release.wait(2)
+        return CommandResult(1, "[]", "failed")
+    pm = _manager(tmp_path, runner, ttl=60)
+    pm.recovery_snapshot()
+    errors, results = [], []
+    def force():
+        try:
+            results.append(pm.recovery_snapshot())
+        except Pm2Error:
+            errors.append(True)
+    owner = threading.Thread(target=force)
+    owner.start()
+    assert entered.wait(1)
+    waiter = threading.Thread(target=force)
+    waiter.start()
+    time.sleep(0.03)
+    release.set()
+    owner.join(2)
+    waiter.join(2)
+    assert not owner.is_alive() and not waiter.is_alive()
+    assert results == [] and len(errors) == 2
+
+
+def test_direct_shebang_launcher_is_ambiguous_for_automatic_recovery(tmp_path):
+    launcher = tmp_path / "start-worker"
+    launcher.write_text("#!/usr/bin/env python3\nimport time; time.sleep(30)\n")
+    launcher.chmod(0o755)
+    service = replace(_service(tmp_path), command=(str(launcher),))
+    assert Pm2Manager.recovery_process_conflict(service) is None
+
+
+def test_pm2_stop_absent_rejects_any_external_port_holder(tmp_path, monkeypatch):
+    manager = _manager(tmp_path, lambda *_: CommandResult(0, "[]", ""))
+    monkeypatch.setattr("pm2_manager.find_port_holder", lambda _: {"pid":None,"name":"unknown"})
+    with pytest.raises(Pm2Error, match="external_process_unmanaged"):
+        manager.stop(_service(tmp_path))
+
+
+def test_pm2_external_kill_forbids_every_managed_pid(tmp_path):
+    payload = [{"name":"server-control--other","pid":567,
+                "pm2_env":{"status":"online"}}]
+    helper = Mock()
+    helper.evaluate_external_identity.return_value = AdoptEvaluation(
+        AdoptDiagnostics(True,"ok",candidate_pid=567), Mock(pid=567,create_time=1), RuntimeState())
+    manager = _manager(tmp_path, lambda *_: CommandResult(0,json.dumps(payload),""), external_helper=helper)
+    with pytest.raises(Pm2Error, match="PM2가 관리"):
+        manager.kill_external(_service(tmp_path))
+    helper.kill_external.assert_not_called()
+
+
+def test_daemon_lifetime_uses_os_birth_and_missing_pid_file_is_inconclusive(tmp_path):
+    manager=_manager(tmp_path,lambda *_:CommandResult(0,'[]',''))
+    manager._runtime_root.mkdir(parents=True)
+    pidfile=manager._runtime_root/'pm2.pid';pidfile.write_text('123')
+    process=Mock()
+    process.uids.return_value=Mock(real=os.getuid())
+    process.cmdline.return_value=[f'PM2 v7.1.1: God Daemon ({manager._runtime_root})']
+    process.create_time.return_value=456.75
+    process.status.return_value=psutil.STATUS_RUNNING
+    with patch('pm2_manager.psutil.Process',return_value=process):
+        assert manager._verified_daemon_identity('123:1')=='123:456.75'
+        assert manager._verified_daemon_identity('123:999')=='123:456.75'
+        pidfile.unlink()
+        assert manager._verified_daemon_identity('123:999') is None
