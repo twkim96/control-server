@@ -563,6 +563,48 @@ def test_reconcile_blocks_stale_definition_after_reload(tmp_path: Path) -> None:
         manager.start(old)
 
 
+@pytest.mark.parametrize("missing_id", ["removed", "retained"])
+def test_reconcile_removal_with_missing_working_directory(tmp_path: Path, missing_id: str) -> None:
+    removed = replace(_service(tmp_path, sid="removed"), port=None)
+    retained = replace(_service(tmp_path, sid="retained"), port=None)
+    missing = replace(removed if missing_id == "removed" else retained,
+                      cwd=str(tmp_path / "deleted-project"))
+    if missing_id == "removed":
+        removed = missing
+    else:
+        retained = missing
+    commands = []
+
+    def runner(argv, _env, _timeout):
+        commands.append(argv[1:])
+        return CommandResult(0, "[]", "")
+
+    manager = _manager(tmp_path, runner)
+    manager.activate_service(removed)
+    manager.activate_service(retained)
+    manager.reconcile_service_definitions((retained,))
+
+    assert set(manager._active_services) == {"retained"}
+    assert "removed" in manager._retired_services
+    if missing_id == "retained":
+        with pytest.raises(Pm2Error, match="working directory does not exist"):
+            manager.start(retained)
+    assert not any(command[0] == "start" for command in commands)
+
+
+def test_missing_directory_is_not_a_manifest_definition_change(tmp_path: Path) -> None:
+    cwd = tmp_path / "project"
+    cwd.mkdir()
+    service = replace(_service(tmp_path), cwd=str(cwd))
+    manager = _manager(tmp_path, lambda *_: CommandResult(0, "[]", ""))
+    manager.write_manifest(service)
+    cwd.rmdir()
+
+    assert manager.manifest_definition_issues((service,)) == set()
+    with pytest.raises(Pm2Error, match="working directory does not exist"):
+        manager.write_manifest(service)
+
+
 def test_reconcile_rejects_runtime_definition_change_while_online(tmp_path: Path) -> None:
     old = _service(tmp_path, sid="reloadable")
     new = replace(old, env={"EXAMPLE": "changed"})

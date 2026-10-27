@@ -5,6 +5,23 @@ the 1.5.0 public distribution release onward.
 
 ## [Unreleased]
 
+### Managed acceptance (2026-10-28)
+
+- applied the reviewed PM2 recovery controller patch as managed 1.6.2, preserving the
+  already deployed missing-cwd definition comparison fix and private configuration
+- controller activation preserved all six managed service PIDs and the independent
+  PM2 7.1.0 daemon; a separate explicit engine operation then upgraded to PM2 7.1.1
+- all six previously running managed services restarted and passed health verification;
+  twelve nonrunning services stayed nonrunning, and the external process was preserved
+- the existing external instance remained unmanaged and was correctly shown as unknown
+  because identity was unverified; endpoint health alone was not treated as ownership
+- recovery journal and maintenance owner cleared on success; config, environment and
+  private predeployment recovery material were preserved
+- deployment candidate manager/operations regressions, frontend build and package
+  inspection passed; operational API/PM2 checks do not establish browser or long-term
+  workload/checkpoint acceptance, npm publication, or a release CI for the version bump
+
+
 ### Fixed
 
 - preserve valid automatic-recovery-disabled blocker reasons across controller restarts

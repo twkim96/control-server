@@ -1,6 +1,6 @@
 {
   "name": "@twkim96/control-server",
-  "version": "1.6.0",
+  "version": "1.6.2",
   "description": "A local-first macOS dashboard for managing long-running services and one-shot tasks",
   "type": "module",
   "license": "MIT",

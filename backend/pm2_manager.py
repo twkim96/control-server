@@ -174,7 +174,7 @@ class Pm2Manager:
                 continue
             try:
                 saved = json.loads(path.read_text(encoding="utf-8"))
-                expected = self.build_manifest(service)
+                expected = self.build_manifest(service, validate_cwd=False)
             except (OSError, ValueError, Pm2Error):
                 issues.add(service_id)
                 continue
@@ -290,9 +290,11 @@ class Pm2Manager:
             if removed or runtime_changed:
                 self.invalidate()
 
-    def build_manifest(self, service: ServiceConfig) -> dict[str, object]:
+    def build_manifest(
+        self, service: ServiceConfig, *, validate_cwd: bool = True
+    ) -> dict[str, object]:
         cwd = Path(service.cwd)
-        if not cwd.is_dir():
+        if validate_cwd and not cwd.is_dir():
             raise Pm2Error(f"working directory does not exist: {cwd}")
         if not service.command:
             raise Pm2Error(f"{service.id}: empty command")
@@ -346,7 +348,9 @@ class Pm2Manager:
         return {"apps": [app]}
 
     def _runtime_definition_signature(self, service: ServiceConfig) -> tuple[object, ...]:
-        return _manifest_runtime_signature(self.build_manifest(service))
+        # Comparing saved definitions must not validate unrelated runtime paths.
+        # write_manifest still validates the directory before an actual start.
+        return _manifest_runtime_signature(self.build_manifest(service, validate_cwd=False))
 
     def write_manifest(self, service: ServiceConfig) -> Path:
         manifest = self.build_manifest(service)
