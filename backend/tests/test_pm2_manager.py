@@ -687,7 +687,8 @@ def test_reconcile_removal_serializes_with_concurrent_start(tmp_path: Path) -> N
     assert "삭제된 서비스" in str(start_errors[0])
 
 
-def test_stop_rotates_log_with_service_policy(tmp_path: Path) -> None:
+def test_stop_rotates_log_with_service_policy(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr("pm2_manager._process_tree_identities", lambda _: ())
     service = _service(tmp_path)
     online = True
 
@@ -720,7 +721,8 @@ def test_stop_rotates_log_with_service_policy(tmp_path: Path) -> None:
     assert (tmp_path / "logs" / "example.log.1").stat().st_size == 2048
 
 
-def test_stop_reconciles_stopped_state_after_cli_failure(tmp_path: Path) -> None:
+def test_stop_reconciles_stopped_state_after_cli_failure(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr("pm2_manager._process_tree_identities", lambda _: ())
     service = _service(tmp_path)
     online = True
 
@@ -774,6 +776,7 @@ def test_stop_schedules_graceful_fallback_before_pm2_kill_deadline(tmp_path: Pat
     with (
         patch("pm2_manager._process_tree_identities", return_value=((88, 1.0),)),
         patch("pm2_manager._send_fallback_signals") as send_fallbacks,
+        patch("pm2_manager._confirm_stop_complete"),
     ):
         manager.stop(service, service.actions[0].stop_strategy)
 
@@ -1061,3 +1064,60 @@ def test_stop_refuses_unobservable_tree_before_sending_signals(tmp_path):
         with pytest.raises(Pm2Error, match="자식 프로세스"):
             manager.stop(_service(tmp_path))
     assert all(call.args[0][1] != "stop" for call in runner.call_args_list)
+
+
+@pytest.mark.parametrize("delta", [0.5, 0.005, 0.0001])
+def test_fallback_never_signals_reused_pid(delta):
+    from pm2_manager import _send_fallback_signals
+    process = Mock()
+    process.create_time.return_value = 100.0 + delta
+    process.is_running.return_value = True
+    process.status.return_value = psutil.STATUS_SLEEPING
+    with patch("pm2_manager.psutil.Process", return_value=process), patch("pm2_manager.os.kill") as kill:
+        _send_fallback_signals(((99, 100.0),), ("SIGTERM",), 0, threading.Event())
+    kill.assert_not_called()
+
+
+@pytest.mark.parametrize("relative", [False, True])
+def test_path_symlink_with_unreadable_orphan_is_unknown(tmp_path, monkeypatch, relative):
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    alias = bindir / "alias"
+    alias.symlink_to("/bin/sleep")
+    service = replace(_service(tmp_path), command=("alias", "30"), env={"PATH": "bin" if relative else str(bindir)})
+    candidate = Mock()
+    candidate.info = {"pid": 99, "uids": Mock(real=os.getuid())}
+    candidate.cmdline.side_effect = psutil.AccessDenied(99)
+    candidate.exe.return_value = os.path.realpath("/bin/sleep")
+    with patch("pm2_manager.psutil.process_iter", return_value=[candidate]):
+        assert Pm2Manager.recovery_process_conflict(service) is None
+
+
+def test_explicit_start_recreates_safe_dump_inactive_entry(tmp_path):
+    payload = [{"name": "server-control--example", "pid": 0,
+                "pm2_env": {"status": "stopped", "autostart": False}}]
+    commands = []
+    def runner(argv, _env, _timeout):
+        commands.append(argv[1])
+        if argv[1] == "delete":
+            payload.clear()
+        if argv[1] == "start":
+            payload.append({"name": "server-control--example", "pid": 88,
+                            "pm2_env": {"status": "online", "autostart": True}})
+        return CommandResult(0, json.dumps(payload), "")
+    manager = _manager(tmp_path, runner)
+    with patch('pm2_manager.find_port_holder', return_value=None):
+        assert manager.start(_service(tmp_path)).alive
+    assert commands.index('delete') < commands.index('start')
+
+
+def test_external_kill_protects_other_managed_descendant(tmp_path):
+    helper = Mock()
+    helper.evaluate_external_identity.return_value = AdoptEvaluation(
+        AdoptDiagnostics(True, 'ok', candidate_pid=999), Mock(pid=999, create_time=1), RuntimeState())
+    payload = [{"name": "server-control--other", "pid": 567, "pm2_env": {"status": "online"}}]
+    manager = _manager(tmp_path, lambda *_: CommandResult(0, json.dumps(payload), ''), external_helper=helper)
+    with patch('pm2_manager._process_tree_identities', return_value=((999, 1.0), (567, 2.0))):
+        with pytest.raises(Pm2Error, match='PM2가 관리'):
+            manager.kill_external(_service(tmp_path))
+    helper.kill_external.assert_not_called()

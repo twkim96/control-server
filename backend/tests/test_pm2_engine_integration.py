@@ -96,8 +96,9 @@ def test_real_engine_upgrade_preserves_service_states_and_is_idempotent(monkeypa
         shutil.rmtree(root)
 
 
-@pytest.mark.parametrize("rollback", [False, True], ids=["upgrade", "forced-rollback"])
-def test_real_engine_never_executes_inactive_apps(rollback):
+@pytest.mark.parametrize("scenario", ["upgrade", "forced-rollback", "interrupted-empty", "interrupted-online"])
+def test_real_engine_never_executes_inactive_apps(scenario):
+    rollback = scenario != "upgrade"
     """Count launches throughout cutover, not just final stopped/errored status."""
     repo = Path(__file__).resolve().parents[2]
     previous = Path(os.environ.get("CONTROL_TEST_PM2_PREVIOUS_CLI", repo / "ops/pm2/node_modules/pm2/bin/pm2")).resolve()
@@ -151,6 +152,19 @@ def test_real_engine_never_executes_inactive_apps(rollback):
             time.sleep(0.1)
         else:
             pytest.fail("fixture did not enter errored state")
+        backup = root / "backup.pm2"
+        if scenario.startswith("interrupted"):
+            pm2("save", "--force")
+            shutil.copyfile(runtime / "pm2/dump.pm2", backup)
+            if scenario == "interrupted-empty":
+                pm2("kill")
+                assert snapshot()["processes"] == []
+            else:
+                pm2("restart", "server-control--stopped")
+                deadline = time.monotonic() + 5
+                while counts()["stopped"] < 2 and time.monotonic() < deadline:
+                    time.sleep(0.05)
+                assert counts()["stopped"] == 2
         baseline = counts()
         # Reuse installed packages, with an injected post-cutover health failure
         # for rollback. Every PM2 operation itself uses the real daemon and CLI.
@@ -158,7 +172,14 @@ def test_real_engine_never_executes_inactive_apps(rollback):
         driver.write_text("""
 import fs from 'node:fs/promises';
 import path from 'node:path';
-const [modulePath,runtimeDir,appRoot,candidate,target,rollback] = process.argv.slice(2);
+const [modulePath,runtimeDir,appRoot,candidate,target,rollback,scenario,backup,previous,beforeJSON] = process.argv.slice(2);
+if(scenario.startsWith("interrupted")){
+  await fs.mkdir(path.join(runtimeDir,"pm2-engine"),{recursive:true});
+  await fs.writeFile(path.join(runtimeDir,"pm2-engine/recovery.json"), JSON.stringify({
+    before:JSON.parse(beforeJSON),previous_cli:previous,previous_version:JSON.parse(await fs.readFile(path.resolve(previous,"../../package.json"),"utf8")).version,
+    previous_target:null,dump:backup,health_targets:[]
+  }));
+}
 const {updateEngine,runCaptured,packageVersion} = await import(modulePath);
 let candidateActive=false;
 const result=await updateEngine({runtimeDir,appRoot,configPath:'unused',hooks:{
@@ -166,7 +187,7 @@ const result=await updateEngine({runtimeDir,appRoot,configPath:'unused',hooks:{
   install:async(prefix)=>{await fs.mkdir(path.join(prefix,'node_modules'),{recursive:true});
     await fs.symlink(path.resolve(candidate,'../..'),path.join(prefix,'node_modules/pm2'));},
   execute:async(command,args,options)=>{const output=await runCaptured(command,args,options);
-    if(args[0]==='update')candidateActive=packageVersion(options.env.CONTROL_PM2_ENGINE_CLI)===target;
+    if(args[0]==='resurrect')candidateActive=packageVersion(options.env.CONTROL_PM2_ENGINE_CLI)===target;
     return output;},
   healthTargets:async()=>[{name:'server-control--running'}],
   probeHealth:async()=>rollback!=='true'||!candidateActive,
@@ -175,7 +196,7 @@ const result=await updateEngine({runtimeDir,appRoot,configPath:'unused',hooks:{
 process.stdout.write(JSON.stringify({status:result.status,rolled_back:result.rolled_back})+'\\n');
 """)
         result = subprocess.run([node, str(driver), str(repo / "lib/pm2-engine.mjs"), str(runtime),
-                                 str(repo), str(candidate), target_version, str(rollback).lower()],
+                                 str(repo), str(candidate), target_version, str(rollback).lower(), scenario, str(backup), str(previous), json.dumps(before)],
                                 env=env, capture_output=True, text=True, timeout=180, check=True)
         job = json.loads(result.stdout.strip().splitlines()[-1])
         assert job["status"] == ("failed" if rollback else "succeeded")
@@ -189,7 +210,35 @@ process.stdout.write(JSON.stringify({status:result.status,rolled_back:result.rol
                 assert item["status"] == "online" and item["pid"] > 0
             else:
                 assert item["status"] == "stopped" and item["pid"] == 0
-        print(f"isolated {previous_version}->{target_version}, rollback={rollback}: inactive launch counts unchanged {baseline}")
+        if scenario == "interrupted-empty":
+            config_path = root / "config.json"
+            config_path.write_text(json.dumps({"controller": {"host": "127.0.0.1", "port": _port()}, "services": [{
+                "id": "stopped", "name": "stopped", "cwd": str(root), "entry_file": "app.cjs",
+                "command": [node, str(app), str(root / "stopped.count"), "stopped"],
+            }]}))
+            config = load_config(config_path)
+            monkeypatch_env = {key: os.environ.get(key) for key in env if key.startswith("CONTROL_")}
+            try:
+                os.environ.update({key: value for key, value in env.items() if key.startswith("CONTROL_")})
+                manager = Pm2Manager(runtime, root / "logs", command_timeout_seconds=25)
+                try:
+                    manager.start(config.services[0])
+                    deadline = time.monotonic() + 5
+                    while counts()["stopped"] == baseline["stopped"] and time.monotonic() < deadline:
+                        time.sleep(0.05)
+                    assert counts()["stopped"] == baseline["stopped"] + 1
+                    manager.stop(config.services[0])
+                finally:
+                    manager.shutdown()
+            finally:
+                for key, value in monkeypatch_env.items():
+                    if value is None:
+                        os.environ.pop(key, None)
+                    else:
+                        os.environ[key] = value
+        assert not (runtime / "pm2-engine/recovery.json").exists()
+        assert not (runtime / "pm2-engine/maintenance-owner").exists()
+        print(f"isolated {previous_version}->{target_version}, scenario={scenario}: inactive launch counts unchanged {baseline}")
     finally:
         current = runtime / "pm2-engine/current/node_modules/pm2/bin/pm2"
         subprocess.run([node, str(current if current.is_file() else previous), "kill"],

@@ -154,6 +154,7 @@ def test_update_starts_detached_job_and_rejects_duplicate(harness):
     argv = harness.spawn.call_args.args[0]
     assert argv[2] == "update"
     assert argv[-1] == job["id"]
+    assert harness.spawn.call_args.kwargs["env"]["CONTROL_PM2_EXPECTED_VERSION"] == "6.0.1"
     assert harness.spawn.call_args.kwargs["start_new_session"] is True
     assert harness.client.post("/api/system/pm2/update", headers=headers).status_code == 409
     harness.spawn.assert_called_once()

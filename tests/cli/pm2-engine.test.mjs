@@ -39,11 +39,14 @@ async function fixture(callback) {
       const version = packageVersion(options.env.CONTROL_PM2_ENGINE_CLI);
       commands.push({ version, args });
       if (args[0] === "save") await fs.promises.writeFile(path.join(layout.pm2Home, "dump.pm2"), JSON.stringify(state.processes));
-      if (args[0] === "update") {
+      if (args[0] === "kill") state.processes = [];
+      if (args[0] === "resurrect") {
+        const saved = JSON.parse(await fs.promises.readFile(path.join(layout.pm2Home, "dump.pm2")));
+        state.processes = saved.map(item => ({...item, pid:item.status === "online" ? 303 : 0}));
         if (version === "7.0.3" && failRecovery) throw new Error("simulated old engine failure");
         if (version !== "7.0.4" || applyCandidate) state.version = version;
         if (version === "7.0.4") {
-          state.processes[1] = { ...state.processes[1], status: "online", pid: 202 };
+
           if (candidateStopsRunning) state.processes[0] = { ...state.processes[0], status: "stopped", pid: 0 };
         }
       }
@@ -79,7 +82,8 @@ test("engine update verifies daemon version and preserves running/stopped servic
   assert.equal(fs.realpathSync(f.layout.current), path.join(f.layout.releases, "7.0.4"));
   assert.equal(fs.existsSync(f.layout.recovery), false);
   assert.equal(fs.existsSync(f.layout.owner), false);
-  assert.ok(f.commands.some(({ args }) => args[0] === "stop" && args[1] === "server-control--stopped"));
+  assert.ok(f.commands.some(({ args }) => args[0] === "kill"));
+  assert.ok(f.commands.every(({ args }) => args[0] !== "update"));
 }));
 
 test("installation failure leaves the running daemon and active pointer untouched", async () => fixture(async (f) => {
@@ -91,7 +95,7 @@ test("installation failure leaves the running daemon and active pointer untouche
   assert.equal(fs.existsSync(f.layout.current), false);
 }));
 
-test("CLI exit success with wrong daemon version rolls back and restarts an existing stopped service", async () => fixture(async (f) => {
+test("CLI exit success with wrong daemon version rolls back running intent from the saved dump", async () => fixture(async (f) => {
   const before = structuredClone(f.state());
   f.noCandidateVersion();
   f.stopRunningDuringUpdate();
@@ -100,7 +104,7 @@ test("CLI exit success with wrong daemon version rolls back and restarts an exis
   assert.equal(result.rolled_back, true);
   assert.equal(f.state().version, "7.0.3");
   assert.equal(statesMatch(before, f.state()), true);
-  assert.ok(f.commands.some(({ version, args }) => version === "7.0.3" && args[0] === "restart" && args[1] === "server-control--running"));
+  assert.ok(f.commands.some(({ version, args }) => version === "7.0.3" && args[0] === "resurrect"));
   assert.equal(fs.existsSync(f.layout.recovery), false);
 }));
 
@@ -111,7 +115,8 @@ test("failed recovery keeps the fence and journal, and next attempt performs rec
   assert.equal(fs.existsSync(f.layout.recovery), true);
   const oldExecute = f.hooks.execute;
   f.hooks.execute = async (command, args, options) => {
-    if (args[0] === "update" && packageVersion(options.env.CONTROL_PM2_ENGINE_CLI) === "7.0.3") {
+    if (args[0] === "resurrect" && packageVersion(options.env.CONTROL_PM2_ENGINE_CLI) === "7.0.3") {
+      await oldExecute(command, args, options).catch(() => {});
       f.state().version = "7.0.3"; return "";
     }
     return oldExecute(command, args, options);
@@ -219,14 +224,31 @@ test("errored app is stopped before engine update and before rollback update", a
   f.noCandidateVersion();
   const execute=f.hooks.execute;
   f.hooks.execute=async (command,args,options) => {
-    if (args[0]==="update") {
+    if (args[0]==="resurrect") {
       assert.ok(f.state().processes.every(item=>item.status!=="errored"));
     }
     return execute(command,args,options);
   };
   const result=await updateEngine(f.options);
   assert.equal(result.rolled_back,true);
-  const firstUpdate=f.commands.findIndex(command=>command.args[0]==="update");
+  const firstUpdate=f.commands.findIndex(command=>command.args[0]==="resurrect");
   const stopped=f.commands.findIndex(command=>command.args[0]==="stop");
   assert.ok(stopped>=0 && stopped<firstUpdate);
+}));
+
+test("changed expected target version is refused before installation or daemon mutation", async () => fixture(async (f) => {
+  f.hooks.install = () => { throw new Error("must not install"); };
+  const result = await updateEngine({...f.options, expectedVersion:"7.0.3"});
+  assert.equal(result.status,"failed");
+  assert.match(result.error,/목표 버전/);
+  assert.deepEqual(f.commands,[]);
+}));
+
+test("unsupported execution triggers are refused before daemon cutover", async () => fixture(async (f) => {
+  for (const options of [{cron_restart:"* * * * *"},{watch:true},{instances:2},{exec_mode:"cluster_mode"},{pmx_module:true}]) {
+    f.state().processes[0].options=options;
+    const result = await updateEngine(f.options);
+    assert.equal(result.status,"failed");
+    assert.deepEqual(f.commands,[]);
+  }
 }));

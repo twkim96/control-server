@@ -43,6 +43,7 @@ class Pm2Process:
     restart_count: int
     exit_code: int | None
     kill_timeout_seconds: float | None
+    autostart: bool | None = None
 
     @property
     def alive(self) -> bool:
@@ -481,7 +482,7 @@ class Pm2Manager:
             return None
         try:
             proc = psutil.Process(pid)
-            return abs(proc.create_time() - created_at) < 0.01 and proc.status() != psutil.STATUS_ZOMBIE
+            return abs(proc.create_time() - created_at) < 1e-6 and proc.status() != psutil.STATUS_ZOMBIE
         except psutil.NoSuchProcess:
             return False
         except (psutil.AccessDenied, OSError):
@@ -502,7 +503,13 @@ class Pm2Manager:
             if "/" in executable:
                 path = Path(executable)
                 return os.path.realpath(path if path.is_absolute() else Path(service.cwd) / path)
-            return shutil.which(executable, path=service.env.get("PATH", os.environ.get("PATH", "")))
+            search = service.env.get("PATH", os.environ.get("PATH", os.defpath))
+            search = os.pathsep.join(
+                p if os.path.isabs(p) else os.path.join(service.cwd, p)
+                for p in search.split(os.pathsep)
+            )
+            found = shutil.which(executable, path=search)
+            return os.path.realpath(found) if found else None
         executables = {resolve(command[0]) for command in commands}
         if None in executables:
             return None
@@ -677,6 +684,12 @@ class Pm2Manager:
                     )
             self._rotate_service_log(service)
             path = self.write_manifest(service)
+            if current is not None and current.autostart is False:
+                # PM2's JSON-start path strips autostart:true and can retain the
+                # safety dump's false flag. Explicit start recreates only this
+                # verified inactive entry from the current manifest.
+                self._command(["delete", self.app_name(service.id)])
+                self.invalidate()
             command_error: Pm2Error | None = None
             try:
                 self._command(["start", str(path), "--only", self.app_name(service.id)])
@@ -895,6 +908,11 @@ class Pm2Manager:
         forbidden.update(kwargs.pop("forbidden_pids", ()) or ())
         if evaluation.candidate.pid in forbidden:
             raise Pm2Error("외부 종료 대상은 PM2가 관리하는 프로세스입니다.")
+        for managed in snapshot.values():
+            if managed.pid is not None:
+                forbidden.update(pid for pid, _ in _process_tree_identities(managed.pid))
+        if evaluation.candidate.pid in forbidden:
+            raise Pm2Error("외부 종료 대상은 PM2가 관리하는 프로세스입니다.")
         return self._external_helper.kill_external(
             service,
             evaluation=evaluation,
@@ -948,6 +966,7 @@ class Pm2Manager:
                     if isinstance(kill_timeout_ms, (int, float))
                     else None
                 ),
+                autostart=env.get("autostart") if type(env.get("autostart")) is bool else None,
             )
         return snapshot
 
@@ -1175,7 +1194,7 @@ def _send_fallback_signals(
             try:
                 process = psutil.Process(pid)
                 if (
-                    abs(process.create_time() - create_time) > 1.0
+                    not abs(process.create_time() - create_time) < 1e-6
                     or not process.is_running()
                     or process.status() == psutil.STATUS_ZOMBIE
                 ):

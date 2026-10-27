@@ -761,7 +761,7 @@ class ProcessManager:
                 fresh_create_time = psutil.Process(candidate.pid).create_time()
             except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
                 return None
-            if candidate.create_time is None or abs(fresh_create_time - candidate.create_time) > 1.0:
+            if candidate.create_time is None or abs(fresh_create_time - candidate.create_time) >= 1e-6:
                 return None
 
             now = self._clock()
@@ -772,7 +772,7 @@ class ProcessManager:
                 for sid, other in self._states.items():
                     if sid == service.id or other.pid != candidate.pid:
                         continue
-                    if other.create_time is None or abs(other.create_time - fresh_create_time) <= 1.0:
+                    if other.create_time is None or abs(other.create_time - fresh_create_time) < 1e-6:
                         return None
 
                 adopted = RuntimeState(
@@ -934,7 +934,7 @@ class ProcessManager:
             for sid, other in self._states.items():
                 if sid == service.id or other.pid != candidate_pid:
                     continue
-                if other.create_time is None or abs(other.create_time - create_time) <= 1.0:
+                if other.create_time is None or abs(other.create_time - create_time) < 1e-6:
                     return fail("pid_tracked_by_other", candidate_pid=candidate_pid)
 
         if not _service_cmdline_match(service, actual_cmdline):
@@ -1219,7 +1219,7 @@ def _create_time_matches(proc: psutil.Process, expected: float) -> bool:
         actual = proc.create_time()
     except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
         return True
-    return abs(actual - expected) <= 1.0
+    return abs(actual - expected) < 1e-6
 
 
 def _pid_identity_is_current(state: RuntimeState) -> bool:
@@ -1241,7 +1241,7 @@ def _pid_identity_is_current(state: RuntimeState) -> bool:
         return False
     except (psutil.AccessDenied, OSError) as exc:
         raise ProcessError(f"PID {state.pid}의 신원을 확인할 수 없습니다: {exc}") from exc
-    if abs(actual_create_time - state.create_time) > 1.0:
+    if not abs(actual_create_time - state.create_time) < 1e-6:
         return False
     return running
 
@@ -1261,7 +1261,7 @@ def _external_process_alive(pid: int, create_time: float) -> bool:
     try:
         proc = psutil.Process(pid)
         return (
-            abs(proc.create_time() - create_time) < 0.01
+            abs(proc.create_time() - create_time) < 1e-6
             and proc.is_running()
             and proc.status() != psutil.STATUS_ZOMBIE
         )
@@ -1323,7 +1323,7 @@ def _candidate_identity_is_alive(candidate: _AdoptCandidate) -> bool:
     try:
         proc = psutil.Process(candidate.pid)
         return (
-            abs(proc.create_time() - candidate.create_time) <= 1.0
+            abs(proc.create_time() - candidate.create_time) < 1e-6
             and proc.is_running()
             and proc.status() != psutil.STATUS_ZOMBIE
         )

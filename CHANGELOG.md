@@ -7,6 +7,14 @@ the 1.5.0 public distribution release onward.
 
 ### Fixed
 
+- replace hidden PM2 update/resurrect with explicit daemon replacement using approved primary
+  and backup dumps; preserve inactive intent when resuming interrupted recovery
+- use strict process lifetime checks, normalize PATH symlinks, retain occupied/unknown port
+  evidence, and refuse unsupported PM2 membership or execution triggers
+- reject malformed persisted safety fields, preserve durable start intent during legacy
+  migration, and record explicit group start intent even when already online
+- recreate safely restored inactive entries on explicit start and bind engine jobs to the
+  checked target version; isolate virtual PM2 test lifetimes from real runner PIDs
 - prevent stopped/errored apps from executing during PM2 engine update or rollback;
   normalize inactive entries before cutover and sanitize recovery dumps, including old journals
 - require captured process lifetimes and listener absence before reporting PM2 stop success;

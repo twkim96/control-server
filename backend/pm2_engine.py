@@ -127,9 +127,14 @@ class Pm2Engine:
             previous = _read_json(self.root / "job.json")
             self._pending_previous_id = previous.get("id") if isinstance(previous, dict) else None
             try:
+                # Bind the job to the version that was checked before submission.
+                expected = self.status().get("latest_version")
+                if expected is not None and (not isinstance(expected, str) or not re.fullmatch(r"\d+\.\d+\.\d+", expected)):
+                    raise EngineError("PM2 목표 버전을 다시 확인하세요.")
                 child = subprocess.Popen(self._arguments("update", job_id),
                                          stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                         stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True)
+                                         stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True,
+                                         env={**os.environ, **({"CONTROL_PM2_EXPECTED_VERSION": expected} if expected else {})})
             except OSError as exc:
                 raise EngineError("PM2 업데이트를 시작하지 못했습니다.") from exc
             self._child = child

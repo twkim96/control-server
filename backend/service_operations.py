@@ -52,7 +52,12 @@ class OperationsError(RuntimeError):
 
 
 def _number(value):
-    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
 
 
 def dependency_order(services):
@@ -136,6 +141,24 @@ class ServiceOperations:
                 if service.id in raw:
                     self._state_error = "intent_state_unreadable"
                 continue
+            # Missing fields are valid legacy state; present safety fields must
+            # never be discarded or repaired into a less restrictive default.
+            valid = {
+                "definition_id": lambda v: isinstance(v, str) and len(v) == 64 and all(c in "0123456789abcdef" for c in v),
+                "daemon_id": lambda v: isinstance(v, str) and 0 < len(v) <= 128,
+                "owned_pid": lambda v: type(v) is int and 0 < v <= 2**31 - 1,
+                "owned_created_at": lambda v: _number(v) and v > 0,
+                "daemon_restore_attempts": lambda v: type(v) is int and 0 <= v <= 3,
+                "daemon_restore_at": lambda v: _number(v) and v >= 0,
+                "last_recovery_attempt": lambda v: v is None or (_number(v) and v >= 0),
+                "recovery_attempts": lambda v: isinstance(v, list) and all(_number(t) and t >= 0 for t in v),
+                "daemon_restore_status": lambda v: v in {"pending", "restoring", "restored", "blocked", "failed"} if isinstance(v, str) else False,
+                "daemon_restore_reason": lambda v: v in {"definition_changed", "existing_pm2_entry", "previous_process_unconfirmed", "external_port_occupied", "dependency_not_ready", "dependency_missing", "pm2_start_failed", "readiness_failed"} if isinstance(v, str) else False,
+                "startup_blocked_reason": lambda v: v in {"previous_process_unconfirmed", "definition_changed", "automatic_recovery_disabled", "automatic_start_budget_exhausted", "dependency_not_ready", "readiness_failed"} if isinstance(v, str) else False,
+            }
+            if any(key in item and not check(item[key]) for key, check in valid.items()):
+                self._state_error = "intent_state_unreadable"
+                continue
             events = []
             source = item.get("events", [])
             for event in source[-self.EVENT_LIMIT:] if isinstance(source, list) else []:
@@ -185,7 +208,7 @@ class ServiceOperations:
             }:
                 clean_item["startup_blocked_reason"] = item["startup_blocked_reason"]
             if type(item.get("daemon_restore_attempts")) is int:
-                clean_item["daemon_restore_attempts"] = max(0, min(3, item["daemon_restore_attempts"]))
+                clean_item["daemon_restore_attempts"] = item["daemon_restore_attempts"]
             if type(item.get("owned_pid")) is int and item["owned_pid"] > 0:
                 clean_item["owned_pid"] = item["owned_pid"]
             if _number(item.get("owned_created_at")):
@@ -433,14 +456,14 @@ class ServiceOperations:
                 guard(service)
             if action == "start":
                 self._dependencies_ready(service, bound)
+                if not automatic:
+                    self.prepare_intent(service, "start")
+                    if intent_versions is not None:
+                        intent_versions[service.id] = self._action_generations[service.id]
                 if not self._online(service.id):
                     if automatic:
                         self._automatic_start_allowed(service)
                         self._reserve_automatic_start(service)
-                    else:
-                        self.prepare_intent(service, "start")
-                        if intent_versions is not None:
-                            intent_versions[service.id] = self._action_generations[service.id]
                     self.pm.start(service)
                     self.record_action(service.id, "start", explicit=False)
             else:
@@ -560,7 +583,8 @@ class ServiceOperations:
                     return
                 for service in self.registry.list_services():
                     process = snapshot.get(service.id)
-                    if process is not None and process.status == "stopped":
+                    if (process is not None and process.status == "stopped"
+                            and "desired_state" not in self._history.get(service.id, {})):
                         entry = self._entry(service.id)
                         entry["desired_state"] = "stopped"
                         entry["definition_id"] = _definition_id(service)

@@ -12,7 +12,7 @@ test('runtime probe exposes process fields without inherited environment', async
     await fs.writeFile(path.join(dir, 'pm2.pid'), '12345');
     await fs.writeFile(path.join(dir, 'index.js'), `module.exports={
       connect: cb=>cb(), disconnect: ()=>{},
-      list: cb=>cb(null,[{name:'server-control--example',pid:42,pm2_env:{status:'online',restart_time:3,pm_uptime:123,env:{SECRET:'never-output'},SECRET:'never-output'}},{name:'other',pm2_env:{env:{SECRET:'never-output'}}}])
+      list: cb=>cb(null,[{name:'server-control--example',pid:42,pm2_env:{status:'online',restart_time:3,pm_uptime:123,env:{SECRET:'never-output'},SECRET:'never-output'}}])
     };`);
     const result = spawnSync(process.execPath, ['lib/pm2-probe.mjs', path.join(dir, 'bin/pm2'), 'runtime'], {
       encoding:'utf8', env: {...process.env, PM2_HOME:dir},
@@ -26,4 +26,17 @@ test('runtime probe exposes process fields without inherited environment', async
     assert.equal(result.stdout.includes('never-output'), false);
     assert.equal('env' in data[0].pm2_env, false);
   } finally { await fs.rm(dir, {recursive:true,force:true}); }
+});
+
+test('runtime probe refuses foreign membership without exposing process data', async () => {
+  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'cs-probe-'));
+  try {
+    await fs.mkdir(path.join(dir,'bin'));
+    await fs.writeFile(path.join(dir,'pm2.pid'),'12345');
+    await fs.writeFile(path.join(dir,'index.js'),`module.exports={connect:cb=>cb(),disconnect:()=>{},list:cb=>cb(null,[{name:'foreign',pid:42,pm2_env:{SECRET:'never-output'}}])};`);
+    const result=spawnSync(process.execPath,['lib/pm2-probe.mjs',path.join(dir,'bin/pm2'),'runtime'],{encoding:'utf8',env:{...process.env,PM2_HOME:dir}});
+    assert.equal(result.status,1);
+    assert.equal(result.stdout,'');
+    assert.equal(result.stderr.includes('never-output'),false);
+  } finally {await fs.rm(dir,{recursive:true,force:true});}
 });

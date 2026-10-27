@@ -98,6 +98,9 @@ curl -sS -b "$COOKIE_JAR" \
 `null`일 수 있습니다. `current_version`은 선택된 설치 버전이고 `daemon_version`은
 실제 실행 중인 daemon에서 확인한 버전으로, 두 값이 다를 수 있습니다.
 
+웹 작업은 마지막으로 확인한 목표 버전에 결합하며, worker가 확인한 최신 버전이 다르면
+설치·전환 전에 실패합니다. 다시 확인한 뒤 새 작업을 요청합니다.
+
 업데이트 시작 응답은 HTTP **202**이며 완료를 의미하지 않습니다. 같은 GET으로 `job`을
 다시 읽고 `status` (`running`, `succeeded`, `failed`), `phase`, `message`, 선택적
 `error`, `rolled_back`을 확인합니다. 작업 시작 불가·중복 작업은

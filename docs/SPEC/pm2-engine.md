@@ -10,7 +10,7 @@ fallback 변경은 기존 독립 엔진을 자동 전환하지 않습니다. 운
 
 Settings를 열면 상태 GET 뒤 최신 버전 확인을 한 번 수행합니다. 확인 버튼은 이를
 갱신할 뿐 엔진을 설치하지 않습니다. 설치·전환은 업데이트 버튼이나
-`control-server pm2 update [--home PATH]`로만 요청합니다. 지원되지 않는 backend/설치나
+`control-server pm2 update [--home PATH] [--to EXPECTED_VERSION]`로만 요청합니다. 지원되지 않는 backend/설치나
 필수 Node/worker 부재는 상태의 `supported`/`reason`으로 설명합니다.
 
 상태에는 선택 엔진, 실제 daemon 버전, 마지막 최신 확인과 background job이 있습니다.
@@ -30,12 +30,23 @@ daemon 버전, 이전 실행/중지 상태와 전환 전에 정상인 health tar
 복구만 완료되면 새 업데이트는 별도 요청합니다. 절차는
 [관리형 복구](../operations/recovery.md#failed-or-interrupted-pm2-engine-update-153)를 따릅니다.
 
+확인했던 목표 버전이 실행 시점의 최신 버전과 다르면 설치 전에 거부합니다. 웹 작업은 마지막
+확인 버전에 결합하고 CLI는 `--to`로 기대 버전을 지정할 수 있습니다. 복구 journal 재개는
+새 버전을 설치하지 않으며 저장된 이전 엔진을 복원합니다.
+
 전환 직전 비실행 항목(`stopped`/`errored`)은 PM2 `stop`으로 중지 상태와 PID 부재를
 확인합니다. 복구 dump도 같은 항목을 `stopped`, `autostart:false`로 기록하고 실행 분기를
 선택하는 `instances`와 오래된 `_tree_pids`를 제거한 별도 파일로 복원합니다. 기존 journal도
 목록·이름 일치를 검증하고 같은 처리를 적용하며 원본 백업은 보존합니다. 최종 상태만
 맞추기 위해 일시 실행한 뒤 중지하는 방식은 허용하지 않습니다. 오류 원문 상태는
 중지 상태로 바뀔 수 있으나, 실행하지 않는 의도는 유지합니다.
+
+내부 resurrect가 숨겨진 `pm2 update` 대신 공식 `kill`과 `resurrect`를 명시적으로
+호출합니다. daemon 종료 후 `dump.pm2`와 fallback `dump.pm2.bak`에 안전 입력을 원자적으로
+설치한 다음 복원합니다. 빈 daemon에서 중단 journal을 재개해도 이전 unsafe dump를 읽지
+않고, journal상 비실행 항목은 현재 online이어도 먼저 중지합니다. fork·단일 instance만
+지원하며 watch/cron/module 등 별도 실행 트리거는 전환 전에 거부합니다. 안전 dump에서
+등록한 비실행 항목은 명시적 시작 시 현재 manifest로 해당 항목만 재등록합니다.
 
 앱 포인터/metadata 변경에는 이 engine journal이 적용되지 않습니다. 실제 pre-1.5.3 앱
 rollback의 독립 엔진 호환은 아직 검증되지 않았습니다.

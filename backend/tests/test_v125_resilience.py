@@ -313,12 +313,12 @@ def test_service_cmdline_match_does_not_infer_unknown_wrapper() -> None:
 # ----------------------------------------------------------------------
 
 
-def test_create_time_matches_within_tolerance() -> None:
+def test_create_time_matches_rejects_different_lifetime() -> None:
     class FakeProc:
         def create_time(self) -> float:
             return 100.5
 
-    assert _create_time_matches(FakeProc(), 100.0) is True   # 차이 0.5 → 일치
+    assert _create_time_matches(FakeProc(), 100.0) is False  # 다른 생애에 해당하는 차이
     assert _create_time_matches(FakeProc(), 102.0) is False  # 차이 1.5 → 불일치
 
 

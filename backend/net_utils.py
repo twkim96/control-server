@@ -22,27 +22,33 @@ def find_port_holder(port: int) -> dict[str, Any] | None:
 
     macOS에서는 psutil.net_connections이 일반 사용자 권한으로는 다른 프로세스의 정보를
     볼 수 없는 경우가 있어 AccessDenied가 발생한다. 그 경우 lsof로 폴백한다.
-    `None`이면 점유자가 없다는 뜻이다.
+    `None`은 성공한 열거에서 점유자가 없는 경우다. 조회 불명은 PID 없는
+    observation=unknown 결과로 보존해 mutation에서 빈 포트로 승인하지 않는다.
     """
     info = holder_via_psutil(port)
     if info is not None and info.get("pid") is not None:
         return info
     # psutil이 못 보거나 PID를 주지 않는 경우(macOS 권한): lsof로 보강한다.
-    info = holder_via_lsof(port)
-    if info is not None:
-        return info
+    lsof_info = holder_via_lsof(port)
+    if lsof_info is not None and lsof_info.get("pid") is not None:
+        return lsof_info
+    for evidence in (info, lsof_info):
+        if evidence is not None and evidence.get("observation") != "unknown":
+            return evidence
     # 마지막 보루: TCP connect로 LISTEN 여부만 확인한다. bind 실패는 TIME_WAIT
     # 같은 listener 없는 상태에서도 날 수 있어 start preflight에는 부적합하다.
     if port_accepts_connections(port):
         return {"pid": None, "name": "unknown", "addr": ""}
+    if info is not None and lsof_info is not None:
+        return {"pid": None, "name": "unknown", "addr": "", "observation": "unknown"}
     return None
 
 
 def holder_via_psutil(port: int) -> dict[str, Any] | None:
     try:
         conns = psutil.net_connections(kind="inet")
-    except (psutil.AccessDenied, PermissionError):
-        return None
+    except (psutil.AccessDenied, OSError):
+        return {"pid": None, "name": "unknown", "addr": "", "observation": "unknown"}
 
     for conn in conns:
         if conn.status != psutil.CONN_LISTEN:
@@ -69,11 +75,13 @@ def holder_via_lsof(port: int) -> dict[str, Any] | None:
             text=True,
             timeout=2,
         )
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        return None
+    except (OSError, subprocess.TimeoutExpired):
+        return {"pid": None, "name": "unknown", "addr": "", "observation": "unknown"}
     if result.returncode != 0:
         # lsof는 매치 없을 때 exit 1
-        return None
+        if result.returncode == 1 and not result.stdout.strip() and not result.stderr.strip():
+            return None
+        return {"pid": None, "name": "unknown", "addr": "", "observation": "unknown"}
 
     pid: int | None = None
     name = ""
@@ -89,19 +97,20 @@ def holder_via_lsof(port: int) -> dict[str, Any] | None:
         elif tag == "c":
             name = value
     if pid is None:
-        return None
+        return {"pid": None, "name": "unknown", "addr": "", "observation": "unknown"}
     return {"pid": pid, "name": name, "addr": ""}
 
 
 def port_accepts_connections(port: int) -> bool:
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.settimeout(0.5)
-    try:
-        return sock.connect_ex(("127.0.0.1", port)) == 0
-    except OSError:
-        return False
-    finally:
-        sock.close()
+    for family, host in ((socket.AF_INET, "127.0.0.1"), (socket.AF_INET6, "::1")):
+        try:
+            with socket.socket(family, socket.SOCK_STREAM) as sock:
+                sock.settimeout(0.5)
+                if sock.connect_ex((host, port)) == 0:
+                    return True
+        except OSError:
+            continue
+    return False
 
 
 def pid_alive(pid: int) -> bool:

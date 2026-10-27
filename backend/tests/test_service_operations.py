@@ -717,6 +717,53 @@ def test_corrupt_intent_blocks_autostart_and_preserves_original_file(tmp_path, r
     assert ops.path.read_text() == raw
 
 
+@pytest.mark.parametrize("field,value", [
+    ("definition_id", ""), ("definition_id", 12), ("daemon_id", ""),
+    ("owned_pid", -1), ("owned_pid", True), ("owned_created_at", 0),
+    ("owned_created_at", float("nan")), ("owned_created_at", True),
+    ("daemon_restore_attempts", -1), ("daemon_restore_attempts", 4),
+    ("daemon_restore_attempts", True), ("daemon_restore_at", float("nan")),
+    ("daemon_restore_at", -1), ("last_recovery_attempt", True),
+    ("recovery_attempts", [float("nan")]), ("recovery_attempts", [-1]),
+    ("recovery_attempts", [True]), ("daemon_restore_status", "unknown"),
+    ("daemon_restore_reason", "unknown"), ("startup_blocked_reason", "unknown"),
+])
+def test_invalid_safety_field_blocks_autostart_and_preserves_bytes(tmp_path, field, value):
+    s = service(autostart=True)
+    ops, pm, health, clock = operations(tmp_path, [s])
+    ops.path.parent.mkdir(parents=True)
+    raw = json.dumps({s.id: {"desired_state": "running", field: value}}).encode()
+    ops.path.write_bytes(raw)
+    reloaded = ServiceOperations(ops.registry, pm, health, tmp_path, clock=clock, monotonic_clock=clock)
+    reloaded.autostart()
+    reloaded.poll_once()
+    assert pm.calls == []
+    assert reloaded.recovery_status(s.id)["reason"] == "intent_state_unreadable"
+    assert ops.path.read_bytes() == raw
+
+
+def test_group_start_online_after_cancel_records_running_without_spawn(tmp_path):
+    s = service()
+    ops, pm, health, clock = operations(tmp_path, [s])
+    pm.put(s.id)
+    ops.cancel_recovery(s)
+    assert finish(ops, ops.submit_group("apps", "start"))["status"] == "succeeded"
+    reloaded = ServiceOperations(ops.registry, pm, health, tmp_path, clock=clock, monotonic_clock=clock)
+    assert reloaded.recovery_status(s.id)["desired_state"] == "running"
+    assert pm.calls == []
+
+
+def test_autostart_stopped_membership_preserves_durable_pending_start(tmp_path):
+    s = service(autostart=True)
+    ops, pm, health, clock = operations(tmp_path, [s])
+    ops.prepare_intent(s, "start")
+    pm.put(s.id, online=False)
+    reloaded = ServiceOperations(ops.registry, pm, health, tmp_path, clock=clock, monotonic_clock=clock)
+    reloaded.autostart()
+    assert reloaded.recovery_status(s.id)["desired_state"] == "running"
+    assert json.loads(ops.path.read_text())[s.id]["desired_state"] == "running"
+
+
 def test_legacy_stop_event_and_pm2_stopped_membership_migrate_before_autostart(tmp_path):
     a, b = service("a", autostart=True), service("b", autostart=True)
     ops, pm, health, clock = operations(tmp_path, [a, b])

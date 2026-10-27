@@ -342,3 +342,16 @@ def test_destructive_identity_rejects_wrong_executable_or_cwd(monkeypatch, execu
     service = replace(_make_service(port=12345), command=("/usr/bin/python", "x.py"))
     with pytest.raises(ProcessError, match="실행 파일 또는 cwd"):
         module._verify_destructive_identity(service, 12345, 10.0)
+
+
+@pytest.mark.parametrize('delta', [0.5, 0.005, 0.0001])
+def test_external_signal_identity_rejects_nearby_birth(delta):
+    from unittest.mock import Mock, patch
+    from process_manager import _external_process_alive, _pid_identity_is_current, RuntimeState
+    proc = Mock()
+    proc.create_time.return_value = 100.0 + delta
+    proc.is_running.return_value = True
+    proc.status.return_value = psutil.STATUS_SLEEPING
+    with patch('process_manager.psutil.Process', return_value=proc):
+        assert _external_process_alive(99, 100.0) is False
+        assert _pid_identity_is_current(RuntimeState(pid=99, create_time=100.0)) is False
