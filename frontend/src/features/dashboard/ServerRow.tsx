@@ -71,7 +71,7 @@ export function ServerRow({
   const moreItems = useMemo<DropdownItem[]>(() => {
     const enabled = service.actions.filter((a) => a.enabled);
     const items: DropdownItem[] = [];
-    const isExternal = state === "running_external";
+    const isExternal = !!runtime?.unmanaged;
 
     const restartAction = enabled.find((a) => a.type === "process_restart");
     if (restartAction && service.lifecycle.restart_visibility === "danger_menu") {
@@ -202,7 +202,9 @@ export function ServerRow({
         <div className={classes.cellStatus} data-mobile-label="STATUS">
           <StatusDot state={state} />
           <span className={classes.cellStatusSub}>
-            {runtime?.last_exit_time
+            {runtime?.unmanaged
+              ? `external${runtime.unmanaged_pid ? ` · pid ${runtime.unmanaged_pid}` : " · identity unverified"}`
+              : runtime?.last_exit_time
               ? `exit ${runtime.last_exit_code ?? "—"} · ${formatRelative(runtime.last_exit_time)}`
               : runtime?.alive
                 ? "live"

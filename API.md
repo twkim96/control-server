@@ -386,12 +386,12 @@ ServiceMeta에는 선택적 `group`/`depends_on`과 `restart`/`recovery` 정책,
 | 값 | 의미 |
 | --- | --- |
 | `running` | 추적 PID 생존, health 비활성 또는 정상 |
-| `running_external` | 외부 인스턴스가 포트/health에 응답 |
-| `unhealthy` | PID는 생존하지만 health 실패 |
+| `running_external` | 로컬 외부 PID/명령/cwd와 health 확인 |
+| `unhealthy` | 관리 PID 또는 신원이 확인된 외부 PID가 생존하지만 health 실패 |
 | `starting` | 시작 직후 grace 구간 |
 | `stopping` | 중지 진행 중 |
 | `stopped` | 추적 PID와 외부 응답이 없음 |
-| `unknown` | 시작 이력이 없는 초기 상태 등 |
+| `unknown` | 초기 상태 또는 외부 응답/점유자의 신원을 확인하지 못함 |
 
 측정 방식과 해석은 [리소스 사양](docs/SPEC/resources.md)에 있습니다.
 
@@ -400,8 +400,12 @@ ServiceMeta에는 선택적 `group`/`depends_on`과 `restart`/`recovery` 정책,
 
 ### 입양 진단
 
-`running_external` 상세 응답에는 외부 인스턴스 안전 진단이 포함될 수 있습니다.
-PM2 모드는 자동 입양하지 않으며 검사에 통과한 외부 PID도 `pm2_exclusive`로 표시합니다.
+`unmanaged: true`인 상세 응답에는 외부 인스턴스 안전 진단이 포함될 수 있습니다.
+소유 여부는 health와 별개이며 `unknown`/`unhealthy`도 unmanaged일 수 있습니다.
+PM2 모드는 자동 입양하지 않습니다. 진단 `ok`는 신원/health 검사 결과이며 소유권을
+받았다는 뜻이 아닙니다. 외부 종료는 기존 신원·health 재검증을 모두 요구합니다.
+관리 밖 프로세스에 일반 시작/중지/재시작을 요청하면 `external_process_unmanaged`/409이며,
+명시적 외부 종료 성공은 대기 중인 daemon 복구에 대해 중지 의도로 보존합니다.
 
 ```jsonc
 {
@@ -471,6 +475,9 @@ PM2 모드는 자동 입양하지 않으며 검사에 통과한 외부 PID도 `p
 ```
 
 PM2 runtime은 선택적 `supervision: {restart_count, pm2_status}`를 제공합니다.
+선택적 `daemon_recovery`는 `desired_state` (`running`/`stopped`/null), `status`
+(`pending`/`restoring`/`restored`/`blocked`/`failed`/null)와 안전한 `reason` 코드/null을
+제공합니다. 복구 조건과 한도는 [Servers](docs/SPEC/servers.md#pm2-daemon-교체-후-복구)를 따릅니다.
 수치는 공유 snapshot 기준입니다. UI의 헬스로그 숨기기는 원본 로그 API 응답/저장을
 변경하지 않습니다.
 

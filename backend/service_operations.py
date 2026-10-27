@@ -8,7 +8,8 @@ from __future__ import annotations
 from collections import OrderedDict
 from contextlib import ExitStack, contextmanager
 from copy import deepcopy
-from dataclasses import replace
+from dataclasses import asdict, replace
+import hashlib
 import json
 import logging
 import math
@@ -33,7 +34,17 @@ _MESSAGES = {
     "recovery_requested": "Unhealthy recovery restart requested.",
     "recovery_succeeded": "Unhealthy recovery restart completed.",
     "recovery_failed": "Unhealthy recovery restart failed; no fallback attempted.",
+    "daemon_restore_requested": "Restoring previously running service after PM2 daemon replacement.",
+    "daemon_restore_succeeded": "Service restored and readiness confirmed after PM2 daemon replacement.",
+    "daemon_restore_blocked": "PM2 recovery blocked; check external process, dependencies and configuration.",
+    "daemon_restore_failed": "PM2 recovery failed; inspect service health and logs.",
 }
+
+
+def _definition_id(service):
+    # Bind intent to its exact definition without persisting commands or secrets.
+    return hashlib.sha256(json.dumps(asdict(service), sort_keys=True,
+                                    separators=(",", ":")).encode()).hexdigest()
 
 
 class OperationsError(RuntimeError):
@@ -132,6 +143,28 @@ class ServiceOperations:
             clean_item = {"events": events, "restart_count": 0,
                           "last_exit_code": None, "last_exit_time": None, "recovery_attempts": [],
                           "last_recovery_attempt": None}
+            if item.get("desired_state") in {"running", "stopped"}:
+                clean_item["desired_state"] = item["desired_state"]
+            for key in ("definition_id", "daemon_id"):
+                value = item.get(key)
+                if isinstance(value, str) and len(value) <= 128:
+                    clean_item[key] = value
+            if item.get("daemon_restore_status") in {"pending", "restoring", "restored", "blocked", "failed"}:
+                clean_item["daemon_restore_status"] = item["daemon_restore_status"]
+            if item.get("daemon_restore_reason") in {
+                "definition_changed", "existing_pm2_entry", "previous_process_unconfirmed",
+                "external_port_occupied", "dependency_not_ready", "dependency_missing",
+                "pm2_start_failed", "readiness_failed",
+            }:
+                clean_item["daemon_restore_reason"] = item["daemon_restore_reason"]
+            if _number(item.get("daemon_restore_at")):
+                clean_item["daemon_restore_at"] = item["daemon_restore_at"]
+            if type(item.get("daemon_restore_attempts")) is int:
+                clean_item["daemon_restore_attempts"] = max(0, min(3, item["daemon_restore_attempts"]))
+            if type(item.get("owned_pid")) is int and item["owned_pid"] > 0:
+                clean_item["owned_pid"] = item["owned_pid"]
+            if _number(item.get("owned_created_at")):
+                clean_item["owned_created_at"] = item["owned_created_at"]
             for key in ("restart_count", "last_exit_code"):
                 if type(item.get(key)) is int:
                     clean_item[key] = item[key]
@@ -196,6 +229,17 @@ class ServiceOperations:
             if explicit:
                 self._action_generations[service_id] = self._action_generations.get(service_id, 0) + 1
             self._event(service_id, action)
+            entry = self._entry(service_id)
+            entry["desired_state"] = "stopped" if action == "stop" else "running"
+            entry["definition_id"] = _definition_id(self.registry.get(service_id))
+            identity = getattr(self.pm, "daemon_identity", lambda: None)()
+            if identity is not None:
+                entry["daemon_id"] = identity
+            entry.pop("daemon_restore_status", None)
+            entry.pop("daemon_restore_reason", None)
+            entry["daemon_restore_attempts"] = 0
+            if action != "stop":
+                self._remember_identity(service_id, entry)
             self._failures.pop(service_id, None)
             try:
                 self._persist()
@@ -328,7 +372,7 @@ class ServiceOperations:
             else:
                 self._refuse_external_dependents(service, selected)
                 self.pm.stop(service)
-                self.record_action(service.id, "stop", explicit=False)
+                self.record_action(service.id, "restart" if requested_action == "restart" else "stop", explicit=False)
         if action == "start":
             self._wait_ready(service, intent_versions=intent_versions)
 
@@ -430,7 +474,10 @@ class ServiceOperations:
 
     def autostart(self):
         """Production PM2 startup: never implicitly select autostart:false dependencies."""
-        selected = tuple(s for s in self.registry.list_services() if s.lifecycle.autostart)
+        with self._lock:
+            selected = tuple(s for s in self.registry.list_services()
+                             if s.lifecycle.autostart
+                             and self._history.get(s.id, {}).get("desired_state") != "stopped")
         ordered = dependency_order(selected)
         bound = {s.id: s for s in selected}
         failed = set()
@@ -452,6 +499,132 @@ class ServiceOperations:
                         failed.add(service.id)
                     elif self._stop.wait(0.25 * 2**attempt):
                         return
+
+    def recovery_status(self, sid):
+        with self._lock:
+            entry = self._entry(sid)
+            return {"desired_state": entry.get("desired_state"),
+                    "status": entry.get("daemon_restore_status"),
+                    "reason": entry.get("daemon_restore_reason")}
+
+    def _remember_identity(self, sid, entry):
+        getter = getattr(self.pm, "get_state_readonly", None)
+        if callable(getter):
+            state = getter(sid)
+            if state.pid is not None and state.create_time is not None:
+                entry["owned_pid"] = state.pid
+                entry["owned_created_at"] = state.create_time
+
+    def _restore_after_daemon_change(self, service, process, daemon_id):
+        """Use ordinary PM2 starts only after a proven daemon replacement.
+
+        Never restart ordinary crashed/stopped entries or kill an orphan. Existing
+        PM2 port/definition checks remain authoritative; failed recovery is visible.
+        """
+        if daemon_id is None:
+            return
+        sid = service.id
+        with self._mutation(service):
+            with self._lock:
+                entry = self._entry(sid)
+                before = dict(entry)
+                old_id = entry.get("daemon_id")
+                changed = old_id is not None and old_id != daemon_id
+                if changed:
+                    entry["daemon_restore_attempts"] = 0
+                    if entry.get("desired_state") == "running":
+                        entry["daemon_restore_status"] = "pending"
+                        entry.pop("daemon_restore_reason", None)
+                entry["daemon_id"] = daemon_id
+                # Bootstrap only from confirmed PM2 state; absence is not intent.
+                if "desired_state" not in entry and process is not None:
+                    if process.status in {"online", "launching", "stopped"}:
+                        entry["desired_state"] = "running" if process.alive else "stopped"
+                        entry["definition_id"] = _definition_id(service)
+                if process is not None and process.alive and not changed:
+                    self._remember_identity(sid, entry)
+                status = entry.get("daemon_restore_status")
+                if entry != before:
+                    self._persist()
+                if (entry.get("desired_state") != "running"
+                        or status not in {"pending", "restoring", "blocked", "failed"}):
+                    return
+                if any(job["status"] in {"queued", "running"} for job in self._jobs.values()):
+                    return
+                version = {sid: self._action_generations.get(sid, 0)}
+                if entry.get("definition_id") != _definition_id(service):
+                    if status != "blocked":
+                        entry["daemon_restore_status"] = "blocked"
+                        entry["daemon_restore_reason"] = "definition_changed"
+                        self._event(sid, "daemon_restore_blocked")
+                        self._persist()
+                    return
+                if (entry.get("daemon_restore_attempts", 0) >= 3
+                        or self.clock() - entry.get("daemon_restore_at", 0) < 60):
+                    return
+            # Never undo a current stopped/errored PM2 entry. Only an absent app
+            # lost with the daemon is eligible; an online restoration is verified.
+            fresh = self.pm.get_process(sid, force=True)
+            if fresh is not None and not fresh.alive:
+                with self._lock:
+                    if status != "blocked":
+                        entry["daemon_restore_status"] = "blocked"
+                        entry["daemon_restore_reason"] = "existing_pm2_entry"
+                        self._event(sid, "daemon_restore_blocked")
+                        self._persist()
+                return
+            try:
+                self._dependencies_ready(service)
+                if fresh is None:
+                    inspect_identity = getattr(self.pm, "runtime_identity_alive", None)
+                    if (service.port is None or not callable(inspect_identity)
+                            or inspect_identity(entry.get("owned_pid"), entry.get("owned_created_at")) is not False):
+                        raise OperationsError("previous_process_unconfirmed")
+                    inspect_conflict = getattr(self.pm, "recovery_process_conflict", None)
+                    if not callable(inspect_conflict) or inspect_conflict(service) is not False:
+                        raise OperationsError("previous_process_unconfirmed")
+                    # Check conflicts before consuming a retry. No automatic kill.
+                    if service.port is not None:
+                        from net_utils import find_port_holder
+                        if find_port_holder(service.port) is not None:
+                            raise OperationsError("external_port_occupied")
+                    with self._lock:
+                        entry["daemon_restore_status"] = "restoring"
+                        entry.pop("daemon_restore_reason", None)
+                        entry["daemon_restore_attempts"] = entry.get("daemon_restore_attempts", 0) + 1
+                        entry["daemon_restore_at"] = self.clock()
+                        self._event(sid, "daemon_restore_requested")
+                        self._persist()  # Fail closed before any mutation.
+                    self.pm.start(service)
+            except Exception as exc:
+                with self._lock:
+                    outcome = "blocked" if isinstance(exc, OperationsError) else "failed"
+                    entry["daemon_restore_reason"] = str(exc) if isinstance(exc, OperationsError) else "pm2_start_failed"
+                    if entry.get("daemon_restore_status") != outcome:
+                        entry["daemon_restore_status"] = outcome
+                        self._event(sid, "daemon_restore_" + outcome)
+                    self._persist()
+                return
+        # Release locks during readiness waits; manual stop wins over recovery.
+        try:
+            self._wait_ready(service, intent_versions=version)
+        except Exception:
+            outcome = "failed"
+        else:
+            outcome = "restored"
+        with self._lock:
+            if (self._action_generations.get(sid, 0) != version[sid]
+                    or self.registry.get(sid) != service):
+                return
+            entry["daemon_restore_status"] = outcome
+            if outcome == "restored":
+                entry.pop("daemon_restore_reason", None)
+            else:
+                entry["daemon_restore_reason"] = "readiness_failed"
+            if outcome == "restored":
+                self._remember_identity(sid, entry)
+            self._event(sid, "daemon_restore_succeeded" if outcome == "restored" else "daemon_restore_failed")
+            self._persist()
 
     def _observe(self, service, process):
         sid = service.id
@@ -570,11 +743,16 @@ class ServiceOperations:
             if self._last_poll is not None and now - self._last_poll < self.POLL_SECONDS:
                 return
             self._last_poll = now
-            snapshot = self.pm.snapshot()
+            recovery_snapshot = getattr(self.pm, "recovery_snapshot", None)
+            if callable(recovery_snapshot):
+                snapshot, daemon_id = recovery_snapshot()
+            else:
+                snapshot, daemon_id = self.pm.snapshot(), None
             services = self.registry.list_services()
-            for service in services:
+            for service in dependency_order(services):
                 try:
                     self._observe(service, snapshot.get(service.id))
+                    self._restore_after_daemon_change(service, snapshot.get(service.id), daemon_id)
                     self._recover(service, snapshot.get(service.id))
                 except Exception:
                     self._failures.pop(service.id, None)

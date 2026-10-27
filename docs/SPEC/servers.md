@@ -18,7 +18,7 @@ Servers는 HTTP/TCP 서버, worker, gateway, tunnel처럼 계속 살아 있는 �
 - `max_memory_restart_mb: 0`은 메모리 재시작을 끕니다. 양수는 PM2가 관리하는 루트
   PID 기준이며 화면의 부모·자식 RSS 합계와 다릅니다. PM2 주기 검사라 hard cap이 아닙니다.
 - controller 시작 시 `autostart: true` 서비스를 background에서 확인합니다.
-  `autostart: false`인 중지 서비스를 임의 시작하지 않으며 기존 online 서비스는 유지합니다.
+  마지막 명시적 중지 의도가 저장된 서비스는 제외합니다. 기존 online 서비스는 유지합니다.
 
 운영 기본값은 `CONTROL_PROCESS_BACKEND=pm2`입니다. `create_app()`의 기본 `native`는
 테스트·구형 source rollback 호환 경로입니다. native 제거 계획은 [TODO](../TODO.md)에
@@ -51,6 +51,31 @@ reload에서 거부합니다.
 중지·외부·identity 불명·엔진 점검/미복구 상태에서는 자동 재시작하지 않습니다.
 기능을 끈 서비스에는 이 기능을 위한 health 요청을 추가하지 않습니다.
 
+## PM2 daemon 교체 후 복구
+
+운영 observer는 성공한 새 snapshot의 daemon PID와 PID 파일 갱신 시각을 대조합니다.
+실행·중지 의도, 정의의 hash, 마지막 관리 PID/생성 시각과 복구 결과를 기존 private
+`events.json`에 보존합니다. 명시적 시작/중지 성공과 최초 확인된 PM2 상태로 의도를
+기록하며, 목록에서 사라진 사실만으로 실행 의도를 바꾸지 않습니다.
+
+daemon이 교체되고 마지막 의도가 실행인 서비스가 PM2 목록에서 사라졌을 때 기존
+PM2 시작 API를 의존 순서대로 호출합니다. 일반 crash/수동 stop/errored 항목을
+이 복구로 부활시키지 않습니다. 수동 중지는 controller 재시작과 복구 대기보다 우선합니다.
+중단된 복구는 다음 controller에서 재평가하며 정의 변경·엔진 점검 중에는 실행하지 않습니다.
+
+중복 방지를 위해 이전 관리 PID가 종료됐고 설정 포트가 비었는지 확인하며, 포트를
+열기 전인 새 orphan도 찾도록 사용자 프로세스의 명령/cwd를 대조합니다. exec wrapper의
+최종 명령을 모르면 `adopt_command` 선언 전까지 복구를 막습니다. 외부
+프로세스가 남거나 신원이 불명확하면 `blocked`로 남기며 자동 종료·입양하지 않습니다.
+포트 없는 worker는 잔여 자식 부재를 입증할 수 없어 자동 복구를 막고 수동 확인을 요구합니다.
+시작 시도는 daemon당 최대 3회, 시도 사이 최소 60초이며 disk에 보존합니다. online과
+설정 health 확인까지 통과해야 `restored`입니다. 화면에서 복구 상태·차단 이유와 이력을
+확인할 수 있습니다. 외부 프로세스 정리와 운영 배포/실서비스 수용은 별도 작업입니다.
+
+특정 서버의 작업 큐·진행률은 다루지 않습니다. 앱의 메모리 상태를 복원하려면 해당
+앱이 저장과 재개를 지원해야 합니다. PM2의 `save`/`resurrect`는 엔진 전환에도 사용하지만,
+일반 장애에서는 오래된 dump를 일괄 실행하지 않고 현재 정의·의도·포트와 대조합니다.
+
 ## 서비스 그룹과 선행 서비스
 
 `group`은 선택한 표시 이름이며 Servers 화면에서 그룹 시작/중지/재시작을 요청할 수
@@ -72,10 +97,12 @@ reload에서 거부합니다.
 
 ## 외부 프로세스
 
-같은 포트에 PM2가 소유하지 않는 인스턴스가 있으면 `running_external`로 표시합니다.
-PM2 운영 경로는 자동 입양하지 않습니다. 명령·cwd·health 검사에 통과한 외부 인스턴스는
-`pm2_exclusive`, 실패한 경우는 `cmdline_mismatch`, `cwd_mismatch`, `health_failed` 등
-실제 진단을 유지합니다.
+PM2가 소유하지 않는 프로세스의 PID/명령/cwd와 health가 확인돼야 `running_external`입니다.
+신원은 맞지만 health가 실패하면 `unhealthy`, 포트 점유·응답만 있고 신원이 확인되지
+않으면 `unknown`입니다. `unmanaged`는 소유 여부를 별도로 나타내므로 세 상태 모두
+true일 수 있으며 상세에서 PID·health·진단을 함께 표시합니다. PM2 운영 경로는 자동
+입양하지 않습니다. `cmdline_mismatch`, `cwd_mismatch`, `health_failed` 등 실제 진단을
+유지하며 healthy 응답만으로 정상 실행이나 입양 성공이라고 판단하지 않습니다.
 
 `adopt_command`, `adopt_match`와 `unmanaged_policy`는 기존 설정/API 호환을 위해
 보존합니다. 기본 매칭은 exact이며 prefix는 명시한 expected argv 뒤의 trailing 인자만
@@ -85,6 +112,8 @@ PM2 운영 경로는 자동 입양하지 않습니다. 명령·cwd·health 검�
 PID/create_time, holder, cmdline/cwd/health를 다시 확인하고 controller나 다른 관리
 서비스를 종료하지 않습니다. 대상 확인 없이 외부 프로세스를 종료하는 우회 기능을
 추가하지 않습니다.
+관리 밖 프로세스에 대한 일반 PM2 시작/중지/재시작은 API에서도 409로 거부합니다.
+명시적 외부 종료 성공은 중지 의도로 기록하여 대기 중인 자동 복구가 되살리지 않게 합니다.
 
 ## 상태 조회와 URL
 

@@ -3,6 +3,23 @@
 All notable changes are documented here. The project follows semantic versioning from
 the 1.5.0 public distribution release onward.
 
+## [Unreleased]
+
+### Fixed
+
+- persist service running/stopped intent and recover missing managed services after a
+  confirmed dedicated PM2 daemon replacement, with dependency order, bounded retries,
+  manual-stop precedence and duplicate-process checks
+- distinguish verified healthy external instances, unhealthy external instances and
+  unverified responses; show recovery blockers and reject misleading managed actions
+- pin bundled PM2 to 7.1.1; installed independent engines still require an explicit update
+
+### Verification boundary
+
+- isolated daemon-signal recovery and focused backend/frontend regressions are verified
+  separately from production deployment; live service restart and browser acceptance remain pending
+- automatic recovery blocks portless workers and ambiguous exec wrappers for manual verification
+
 ## [1.6.0] - Unreleased
 
 ### Added

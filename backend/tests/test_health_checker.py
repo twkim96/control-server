@@ -17,7 +17,7 @@ from config_loader import (
 )
 from health_checker import HealthChecker
 from log_manager import LogManager
-from process_manager import ProcessManager
+from process_manager import AdoptDiagnostics, AdoptEvaluation, ProcessManager, RuntimeState, _AdoptCandidate
 
 
 def _make_service(
@@ -95,24 +95,38 @@ def test_no_pid_no_health_returns_unknown_then_stopped(pm):
     assert result.unmanaged is False
 
 
-def test_external_instance_detected_as_running_external(pm):
-    """PID 없음 + health 200 + unmanaged_policy=status_only → running_external."""
+@pytest.mark.parametrize(
+    "reason,pid,candidate,health_ok,expected,unmanaged",
+    [
+        ("ok", 123, True, True, "running_external", True),
+        ("health_failed", 123, True, False, "unhealthy", True),
+        ("cmdline_mismatch", 123, True, True, "unknown", True),
+        ("proc_inspect_failed", 123, False, False, "unknown", True),
+        ("no_port_holder", None, False, True, "unknown", True),
+        ("no_port_holder", None, False, False, "unknown", False),
+    ],
+)
+def test_external_classification_requires_identity_and_health(
+    pm, reason, pid, candidate, health_ok, expected, unmanaged
+):
     checker = HealthChecker(pm)
     service = _make_service()
-    with patch.object(
-        checker._verified_http,
-        "request",
-        side_effect=_stub_health_response(ok=True),
-    ):
+    evaluation = AdoptEvaluation(
+        diagnostics=AdoptDiagnostics(ok=reason == "ok", reason=reason, candidate_pid=pid),
+        candidate=_AdoptCandidate(pid=123, pgid=123, create_time=1) if candidate else None,
+        state_snapshot=RuntimeState(),
+    )
+    with patch.object(pm, "evaluate_external_identity", return_value=evaluation) as observe, patch.object(
+        checker._verified_http, "request", side_effect=_stub_health_response(ok=health_ok)
+    ) as request:
         result = checker.check(service)
-    assert result.state == "running_external"
+    assert result.state == expected
     assert result.alive is False
-    assert result.unmanaged is True
-    assert result.pid is None
-    # unmanaged_pid는 None일 수도 있고 (port=1은 보통 비어있음) 실제 PID일 수도 있음.
-    # port에 실제 listener가 있으면 PID 식별. 테스트 환경에선 None.
-    assert result.unmanaged_pid is None or isinstance(result.unmanaged_pid, int)
-    assert result.health["ok"] is True
+    assert result.unmanaged is unmanaged
+    assert result.unmanaged_pid == pid
+    assert result.health["ok"] is health_ok
+    observe.assert_called_once_with(service, health_ok=health_ok)
+    assert request.call_count == 1
 
 
 def test_external_instance_with_unmanaged_policy_disabled(pm):
@@ -164,15 +178,43 @@ def test_external_instance_with_unmanaged_policy_disabled(pm):
     assert result.unmanaged is False
 
 
+def test_status_only_identity_is_rechecked_when_holder_changes(pm):
+    checker = HealthChecker(pm, health_ttl_seconds=0)
+    service = _make_service()
+    class FakeProcess:
+        def cmdline(self):
+            return ["python", "x.py"]
+
+        def cwd(self):
+            return "/tmp"
+
+        def create_time(self):
+            return 1.0
+
+    with patch("process_manager._find_port_holder", side_effect=[{"pid": 12345}, None]), \
+         patch("process_manager.psutil.Process", return_value=FakeProcess()), \
+         patch("process_manager.os.getpgid", return_value=12345), \
+         patch.object(checker._verified_http, "request", side_effect=_stub_health_response(ok=True)):
+        first = checker.check(service)
+        second = checker.check(service)
+    assert first.state == "running_external" and first.unmanaged_pid == 12345
+    assert second.state == "unknown" and second.unmanaged_pid is None
+    assert second.unmanaged is True  # endpoint alone cannot prove local identity
+
+
 def test_external_instance_with_health_disabled(pm):
-    """health.enabled=False면 외부 인스턴스 감지 안 함."""
+    """health.disabled still observes an external holder without probing health."""
     checker = HealthChecker(pm)
     service = _make_service(health_enabled=False)
-    with patch.object(checker._verified_http, "request") as mock_get:
+    evaluation = AdoptEvaluation(
+        AdoptDiagnostics(ok=True, reason="ok", candidate_pid=123),
+        _AdoptCandidate(pid=123, pgid=123, create_time=1), RuntimeState(),
+    )
+    with patch.object(pm, "evaluate_external_identity", return_value=evaluation), patch.object(checker._verified_http, "request") as mock_get:
         result = checker.check(service)
     assert mock_get.call_count == 0
     assert result.state in ("unknown", "stopped")
-    assert result.unmanaged is False
+    assert result.unmanaged is True
 
 
 def test_external_instance_health_failed_falls_back_to_stopped(pm):

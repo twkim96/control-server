@@ -102,9 +102,12 @@ def _build_service_payload(
                 "restart_count": supervision_state.extra.get("pm2_restart_count", 0),
                 "pm2_status": supervision_state.extra["pm2_status"],
             }
-        # running_external = 포트는 살아있는데 컨트롤 서버가 추적/입양하지 못한 상태.
-        # 왜 자동 입양이 안 됐는지 사유를 실어 보낸다 (상세/펼침 뷰에서만 계산).
-        if include_diagnostics and result.state == "running_external":
+        operations = current_app.config.get("service_operations")
+        recovery_status = getattr(operations, "recovery_status", None)
+        if callable(recovery_status) and current_app.config.get("process_backend") == "pm2":
+            payload["runtime"]["daemon_recovery"] = recovery_status(service.id)
+        # Preserve the observation even when external health or identity fails.
+        if include_diagnostics and result.unmanaged:
             evaluation = result.adoption_evaluation
             if evaluation is not None:
                 payload["runtime"]["adopt_diagnostics"] = evaluation.diagnostics.to_dict()
@@ -198,6 +201,16 @@ def _trigger_action_locked(sid: str, aid: str):
 
     pm = _process_manager()
 
+    if (current_app.config.get("process_backend") == "pm2"
+            and action.type in {"process_start", "process_stop", "process_restart"}):
+        try:
+            observed = _health_checker().check(service, include_port_check=False, force_health_probe=True)
+        except ProcessError as exc:
+            return jsonify({"error": "process_error", "message": str(exc)}), 409
+        if observed.unmanaged:
+            return jsonify({"error": "external_process_unmanaged", "state": observed.state,
+                            "message": "관리 밖 프로세스가 감지되었습니다. 외부 프로세스 진단을 확인하세요."}), 409
+
     try:
         operations = current_app.config.get("service_operations")
         if operations is not None:
@@ -257,6 +270,12 @@ def _trigger_action_locked(sid: str, aid: str):
 @auth_required
 @csrf_required
 def kill_external(sid: str):
+    from routes.config_api import _config_reconcile_lock
+    with _config_reconcile_lock:
+        return _kill_external_locked(sid)
+
+
+def _kill_external_locked(sid: str):
     """포트를 점유한 외부 인스턴스 프로세스를 종료한다.
 
     안전 절차:
@@ -316,6 +335,10 @@ def kill_external(sid: str):
         result = pm.kill_external(service, expected_pid=health.unmanaged_pid)
     except ProcessError as exc:
         return jsonify({"error": "kill_external_failed", "message": str(exc)}), 409
+
+    operations = current_app.config.get("service_operations")
+    if operations is not None:
+        operations.record_action(sid, "stop")
 
     _log.info(
         "kill_external: %s pid=%s signal=%s duration=%s",

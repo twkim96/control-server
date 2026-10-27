@@ -16,6 +16,7 @@ const FILTER_LABEL: Record<StatusFilter, string> = {
 export interface DashboardToolbarProps {
   total: number;
   running: number;
+  issues: number;
   search: string;
   onSearchChange: (value: string) => void;
   filter: StatusFilter;
@@ -27,6 +28,7 @@ export interface DashboardToolbarProps {
 export function DashboardToolbar({
   total,
   running,
+  issues,
   search,
   onSearchChange,
   filter,
@@ -47,6 +49,7 @@ export function DashboardToolbar({
       <span className={classes.countPill}>
         {total} servers
         <span className={classes.countRunning}>· {running} running</span>
+        <span> · {issues} issues</span>
       </span>
 
       <div className={classes.searchBox}>

@@ -363,3 +363,79 @@ def test_real_pm2_live_log_rotation_preserves_pid_and_output(tmp_path: Path, mon
         result = subprocess.run([str(wrapper), "kill"], env=env, capture_output=True, timeout=20)
         assert result.returncode == 0
         shutil.rmtree(runtime)
+
+
+def test_daemon_signal_recovery_preserves_running_and_stopped_intent(tmp_path: Path) -> None:
+    """A real dedicated daemon exits; the controller restores only its lost app."""
+    from types import SimpleNamespace
+    from health_checker import HealthChecker
+    from service_operations import ServiceOperations
+
+    listener = tmp_path / "listener.py"
+    listener.write_text(
+        "import signal,socket,sys,time\n"
+        "running=True\n"
+        "def stop(*_):\n global running\n running=False\n"
+        "signal.signal(signal.SIGINT,stop)\n"
+        "signal.signal(signal.SIGTERM,stop)\n"
+        "sock=socket.socket()\n"
+        "sock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)\n"
+        "sock.bind(('127.0.0.1',int(sys.argv[1])))\n"
+        "sock.listen()\n"
+        "while running: time.sleep(0.05)\n"
+        "sock.close()\n", encoding="utf-8")
+    active = _service(tmp_path, _free_port())
+    stopped_port = _free_port()
+    stopped = replace(_service(tmp_path, stopped_port), id="stopped_fixture")
+    registry = SimpleNamespace(list_services=lambda: (active, stopped),
+                               get=lambda sid: active if sid == active.id else stopped)
+    runtime = Path(tempfile.mkdtemp(prefix="sc-recover-", dir="/private/tmp"))
+    wrapper = Path(__file__).resolve().parents[2] / "scripts/pm2ctl.sh"
+    manager = Pm2Manager(runtime, tmp_path / "logs", wrapper=wrapper,
+                         snapshot_ttl_seconds=0.1)
+    health = HealthChecker(manager)
+    ops = ServiceOperations(registry, manager, health, runtime)
+    tracked = []
+    try:
+        first = manager.start(active)
+        tracked.append(psutil.Process(first.pid))
+        _wait_port(active.port, True)
+        manager.start(stopped)
+        manager.stop(stopped)
+        ops.poll_once()
+        old_id = manager.daemon_identity()
+        assert old_id is not None
+        daemon_pid = int((runtime / "pm2/pm2.pid").read_text())
+        os.kill(daemon_pid, signal.SIGTERM)
+        _wait_port(active.port, False)
+        psutil.wait_procs([psutil.Process(daemon_pid)], timeout=12)
+        assert not psutil.pid_exists(daemon_pid)
+        # Recreate the controller too: recovery relies on its private disk state.
+        ops = ServiceOperations(registry, manager, health, runtime)
+        ops.poll_once()
+        restored = manager.get_process(active.id, force=True)
+        assert restored is not None and restored.alive and restored.pid != first.pid
+        tracked.append(psutil.Process(restored.pid))
+        assert manager.daemon_identity() != old_id
+        _wait_port(active.port, True)
+        _wait_port(stopped.port, False)
+        assert manager.get_process(stopped.id, force=True) is None
+        assert ops.recovery_status(active.id)["status"] == "restored"
+        manager.stop(active)
+        ops.record_action(active.id, "stop")
+        assert ops.recovery_status(active.id)["desired_state"] == "stopped"
+    finally:
+        ops.shutdown()
+        manager.shutdown()
+        health._executor.shutdown(wait=True)
+        env = os.environ.copy()
+        env["CONTROL_PM2_HOME"] = str(runtime / "pm2")
+        subprocess.run([str(wrapper), "kill"], env=env, stdin=subprocess.DEVNULL,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20, check=False)
+        for proc in tracked:
+            try:
+                if proc.is_running():
+                    proc.kill()
+            except psutil.NoSuchProcess:
+                pass
+        shutil.rmtree(runtime, ignore_errors=True)

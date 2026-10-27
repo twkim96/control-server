@@ -130,7 +130,7 @@ export interface RuntimeResource {
   window_seconds: number | null;
 }
 
-// 입양(adoption) 실패 사유. running_external 상태의 상세 응답에만 포함된다.
+// 외부 identity 진단. unmanaged 상태의 상세 응답에 포함된다.
 // 백엔드 process_manager.AdoptDiagnostics와 1:1.
 export type AdoptReason =
   | "ok"
@@ -176,7 +176,12 @@ export interface RuntimeInfo {
     restart_count: number;
     pm2_status: string | null;
   };
-  // running_external 상태의 상세(GET /api/services/<id>) 응답에만 포함.
+  daemon_recovery?: {
+    desired_state: "running" | "stopped" | null;
+    status: "pending" | "restoring" | "restored" | "blocked" | "failed" | null;
+    reason?: string | null;
+  } | null;
+  // unmanaged 상태의 상세(GET /api/services/<id>) 응답에 포함.
   adopt_diagnostics?: AdoptDiagnostics;
 }
 

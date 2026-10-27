@@ -11,6 +11,7 @@ import logging
 import os
 import re
 import signal
+import shutil
 import subprocess
 import threading
 import time
@@ -24,6 +25,7 @@ import psutil
 from config_loader import ServiceConfig, StopStrategy
 from log_manager import LogManager
 from process_manager import AdoptEvaluation, ProcessError, ProcessManager, RuntimeState
+from process_manager import _service_cmdline_match
 from net_utils import find_port_holder
 
 
@@ -52,6 +54,10 @@ class CommandResult:
     returncode: int
     stdout: str
     stderr: str
+
+
+class _RuntimeSnapshot(dict):
+    daemon_id: str | None = None
 
 
 Runner = Callable[[list[str], dict[str, str], float], CommandResult]
@@ -99,6 +105,7 @@ class Pm2Manager:
 
         self._condition = threading.Condition()
         self._snapshot: dict[str, Pm2Process] = {}
+        self._snapshot_daemon_id: str | None = None
         self._snapshot_at = 0.0
         self._snapshot_invalidated = False
         self._snapshot_loading = False
@@ -427,6 +434,74 @@ class Pm2Manager:
         with self._condition:
             return self._snapshot_at > 0.0
 
+    def daemon_identity(self) -> str | None:
+        with self._condition:
+            return self._snapshot_daemon_id
+
+    def recovery_snapshot(self):
+        """One fresh, successful observation, including the daemon boot identity."""
+        self.snapshot(force=True)
+        with self._condition:
+            return dict(self._snapshot), self._snapshot_daemon_id
+
+    @staticmethod
+    def runtime_identity_alive(pid, created_at):
+        """None is inconclusive and must never authorize a replacement spawn."""
+        if type(pid) is not int or not isinstance(created_at, (int, float)):
+            return None
+        try:
+            proc = psutil.Process(pid)
+            return abs(proc.create_time() - created_at) < 0.01 and proc.status() != psutil.STATUS_ZOMBIE
+        except psutil.NoSuchProcess:
+            return False
+        except (psutil.AccessDenied, OSError):
+            return None
+
+    @staticmethod
+    def recovery_process_conflict(service):
+        """Check for a newer orphan that PM2 restarted between observations.
+
+        A dead *previously observed* PID and a free port alone cannot exclude a
+        replacement which has not begun listening yet. Only observe; never kill.
+        """
+        if (Path(service.command[0]).name in {"bash", "sh", "zsh", "fish"}
+                and service.adopt_command is None):
+            return None  # An exec wrapper's final argv must be declared.
+        commands = [service.command] + ([service.adopt_command] if service.adopt_command else [])
+        executables = {os.path.realpath(shutil.which(command[0]) or command[0]) for command in commands}
+
+        def unrelated_executable(proc):
+            try:
+                executable = proc.exe()
+                return bool(executable) and os.path.realpath(executable) not in executables
+            except (psutil.Error, OSError, TypeError):
+                return False
+
+        try:
+            for proc in psutil.process_iter(["pid", "uids"]):
+                uids = proc.info.get("uids")
+                if uids is None:
+                    if unrelated_executable(proc):
+                        continue
+                    return None
+                if uids.real != os.getuid():
+                    continue
+                try:
+                    if not _service_cmdline_match(service, proc.cmdline()):
+                        continue
+                    if (os.path.realpath(proc.cwd()) == os.path.realpath(service.cwd)
+                            and proc.status() != psutil.STATUS_ZOMBIE):
+                        return True
+                except psutil.NoSuchProcess:
+                    continue
+                except (psutil.AccessDenied, OSError):
+                    if unrelated_executable(proc):
+                        continue
+                    return None
+        except (psutil.Error, OSError):
+            return None
+        return False
+
     def _start_background_refresh_locked(self, now: float) -> None:
         if self._closed or self._snapshot_loading:
             return
@@ -460,6 +535,7 @@ class Pm2Manager:
         with self._condition:
             if error is None and fresh is not None:
                 self._snapshot = fresh
+                self._snapshot_daemon_id = getattr(fresh, "daemon_id", None)
                 self._snapshot_at = self._clock()
                 self._snapshot_invalidated = False
                 self._snapshot_last_error = None
@@ -736,6 +812,12 @@ class Pm2Manager:
     ) -> None:
         return None
 
+    def evaluate_external_identity(self, service: ServiceConfig, *, health_ok=None):
+        """Observe external identity independently of the legacy adoption policy."""
+        if self._external_helper is None:
+            raise Pm2Error("external process helper is not configured")
+        return self._external_helper.evaluate_external_identity(service, health_ok=health_ok)
+
     def try_adopt_all(self, services) -> list[str]:
         return []
 
@@ -773,9 +855,13 @@ class Pm2Manager:
         if not isinstance(items, list):
             raise Pm2Error("PM2 process list is not an array")
 
-        snapshot: dict[str, Pm2Process] = {}
+        snapshot = _RuntimeSnapshot()
         for item in items:
             if not isinstance(item, dict):
+                continue
+            daemon_id = item.get("control_pm2_daemon_id")
+            if isinstance(daemon_id, str) and re.fullmatch(r"[1-9][0-9]*:[0-9]+(?:\.[0-9]+)?", daemon_id):
+                snapshot.daemon_id = daemon_id
                 continue
             name = item.get("name")
             if not isinstance(name, str):

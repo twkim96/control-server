@@ -108,6 +108,29 @@ def test_login_then_get_services(client):
     assert resource["window_seconds"] is None
 
 
+@pytest.mark.parametrize("state,reason", [("unhealthy", "health_failed"), ("unknown", "cmdline_mismatch")])
+def test_external_diagnostics_in_detail_for_nonrunning_states(client, monkeypatch, state, reason):
+    from health_checker import HealthResult
+    from process_manager import AdoptDiagnostics, AdoptEvaluation, RuntimeState
+
+    evaluation = AdoptEvaluation(
+        AdoptDiagnostics(ok=False, reason=reason, candidate_pid=12345), None, RuntimeState()
+    )
+    result = HealthResult(
+        state=state, alive=False, unmanaged=True, unmanaged_pid=12345,
+        pid=None, pgid=None, uptime_seconds=None,
+        health={"enabled": True, "ok": False}, port_check=None,
+        last_exit_code=None, last_exit_time=None, adoption_evaluation=evaluation,
+    )
+    monkeypatch.setattr(client.application.config["health_checker"], "check", lambda *args, **kwargs: result)
+    client.post("/api/auth/login", json={"password": "secret123"})
+    listing = client.get("/api/services").get_json()["services"][0]["runtime"]
+    detail = client.get("/api/services/dummy").get_json()["runtime"]
+    assert listing["state"] == state and listing["unmanaged"] is True
+    assert "adopt_diagnostics" not in listing
+    assert detail["adopt_diagnostics"]["reason"] == reason
+
+
 def test_mutation_requires_csrf(client):
     client.post("/api/auth/login", json={"password": "secret123"})
     # CSRF 없이는 403

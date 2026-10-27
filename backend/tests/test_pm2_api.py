@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 import json
 import os
 import threading
@@ -121,6 +123,7 @@ def test_pm2_backend_preserves_service_api_contract(tmp_path: Path, monkeypatch)
     before = client.get("/api/services").get_json()["services"][0]["runtime"]
     assert before["alive"] is False
     assert before["state"] == "unknown"
+    assert before["daemon_recovery"]["desired_state"] is None
     assert [command[0] for command in fake.commands].count("jlist") == 1
 
     started = client.post(
@@ -131,6 +134,7 @@ def test_pm2_backend_preserves_service_api_contract(tmp_path: Path, monkeypatch)
     runtime = started.get_json()["service"]["runtime"]
     assert runtime["alive"] is True
     assert runtime["state"] == "running"
+    assert runtime["daemon_recovery"]["desired_state"] == "running"
     assert runtime["pid"] == os.getpid()
     assert "resource" in runtime
 
@@ -142,6 +146,7 @@ def test_pm2_backend_preserves_service_api_contract(tmp_path: Path, monkeypatch)
     runtime = stopped.get_json()["service"]["runtime"]
     assert runtime["alive"] is False
     assert runtime["state"] == "stopped"
+    assert runtime["daemon_recovery"]["desired_state"] == "stopped"
     assert runtime["pid"] is None
 
     command_names = [command[0] for command in fake.commands]
@@ -484,3 +489,23 @@ def test_manual_action_records_history_and_keeps_stopped_pm2_metadata(tmp_path, 
     history = client.get("/api/services/dummy/events").json
     assert [event["type"] for event in history["events"]] == ["start", "stop"]
     assert "do-not-leak" not in str(history)
+
+
+@pytest.mark.parametrize("action", ["start", "stop", "restart"])
+def test_managed_actions_refuse_unmanaged_process_instead_of_false_success(tmp_path, monkeypatch, action):
+    from types import SimpleNamespace
+    monkeypatch.setenv(PASSWORD_ENV, "secret")
+    config = tmp_path / "config.yml"
+    _config(config, tmp_path)
+    fake = FakePm2()
+    app = backend_app.create_app(config_path=config, log_dir=tmp_path / "logs",
+        runtime_dir=tmp_path / "runtime", frontend_dist=tmp_path / "dist",
+        process_backend="pm2", pm2_runner=fake)
+    client = app.test_client()
+    csrf = _login(client)
+    monkeypatch.setattr(app.config["health_checker"], "check",
+                        lambda *_a, **_kw: SimpleNamespace(unmanaged=True, state="unhealthy"))
+    response = client.post(f"/api/services/dummy/actions/{action}", headers={"X-CSRF-Token": csrf})
+    assert response.status_code == 409
+    assert response.get_json()["error"] == "external_process_unmanaged"
+    assert fake.commands == []

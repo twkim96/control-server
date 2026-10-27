@@ -524,3 +524,166 @@ def test_routes_auth_csrf_native_and_no_get_mutation(tmp_path, monkeypatch):
     response = client.post("/api/service-groups/apps/actions/start", headers={"X-CSRF-Token": token})
     assert response.status_code == 409
     assert response.json["supported"] is False
+
+
+def daemon_operations(tmp_path, services):
+    ops, pm, health, clock = operations(tmp_path, services)
+    pm.boot = "101:1"
+    pm.recovery_snapshot = lambda: (dict(pm.processes), pm.boot)
+    pm.daemon_identity = lambda: pm.boot
+    pm.runtime_identity_alive = lambda *_: False
+    pm.recovery_process_conflict = lambda _: False
+    return ops, pm, health, clock
+
+
+def test_daemon_replacement_restores_only_running_intent_in_dependency_order(tmp_path, monkeypatch):
+    monkeypatch.setattr("net_utils.find_port_holder", lambda _: None)
+    db = replace(service("db"), port=12340)
+    web = replace(service("web", deps=("db",)), port=12341)
+    stopped = replace(service("stopped"), port=12342)
+    ops, pm, _, clock = daemon_operations(tmp_path, [web, stopped, db])
+    pm.put("db")
+    pm.put("web")
+    pm.put("stopped", online=False)
+    ops.poll_once()
+    pm.processes.clear()
+    pm.boot = "102:2"
+    clock.advance()
+    ops.poll_once()
+    assert pm.calls == [("start", "db"), ("start", "web")]
+    assert ops.recovery_status("stopped")["desired_state"] == "stopped"
+    assert ops.recovery_status("web")["status"] == "restored"
+    assert ops.events("web")["events"][-1]["type"] == "daemon_restore_succeeded"
+
+
+def test_durable_daemon_intent_survives_controller_restart(tmp_path, monkeypatch):
+    monkeypatch.setattr("net_utils.find_port_holder", lambda _: None)
+    s = replace(service(), port=12340)
+    ops, pm, health, clock = daemon_operations(tmp_path, [s])
+    pm.put(s.id)
+    ops.poll_once()
+    pm.processes.clear()
+    pm.boot = "103:3"
+    reloaded = ServiceOperations(ops.registry, pm, health, tmp_path, clock=clock, monotonic_clock=clock)
+    reloaded.poll_once()
+    assert pm.calls == [("start", s.id)]
+    assert reloaded.recovery_status(s.id)["status"] == "restored"
+
+
+@pytest.mark.parametrize("blocker", ["port", "orphan", "uncertain", "no_port", "definition"])
+def test_daemon_restore_blocks_unsafe_duplicate_or_changed_definition(tmp_path, monkeypatch, blocker):
+    monkeypatch.setattr("net_utils.find_port_holder", lambda _: {"pid": 55} if blocker == "port" else None)
+    s = replace(service(), port=None if blocker == "no_port" else 12340)
+    ops, pm, _, clock = daemon_operations(tmp_path, [s])
+    pm.put(s.id)
+    ops.poll_once()
+    pm.processes.clear()
+    pm.boot = "104:4"
+    if blocker in {"orphan", "uncertain"}:
+        pm.runtime_identity_alive = lambda *_: True if blocker == "orphan" else None
+    if blocker == "definition":
+        ops.registry.services = (replace(s, command=("changed",)),)
+    clock.advance()
+    ops.poll_once()
+    assert pm.calls == []
+    assert ops.recovery_status(s.id)["status"] == "blocked"
+    clock.advance()
+    ops.poll_once()
+    assert [e["type"] for e in ops.events(s.id)["events"]].count("daemon_restore_blocked") == 1
+
+
+def test_daemon_port_conflict_can_clear_but_manual_stop_cancels_recovery(tmp_path, monkeypatch):
+    s = replace(service(), port=12340)
+    ops, pm, _, clock = daemon_operations(tmp_path, [s])
+    pm.put(s.id)
+    ops.poll_once()
+    pm.processes.clear()
+    pm.boot = "105:5"
+    monkeypatch.setattr("net_utils.find_port_holder", lambda _: {"pid": 55})
+    clock.advance()
+    ops.poll_once()
+    assert ops.recovery_status(s.id)["status"] == "blocked"
+    ops.record_action(s.id, "stop")
+    monkeypatch.setattr("net_utils.find_port_holder", lambda _: None)
+    clock.advance()
+    ops.poll_once()
+    assert pm.calls == []
+    assert ops.recovery_status(s.id) == {"desired_state": "stopped", "status": None, "reason": None}
+
+
+def test_same_daemon_missing_or_stopped_process_is_not_revived(tmp_path):
+    s = replace(service(), port=12340)
+    ops, pm, _, clock = daemon_operations(tmp_path, [s])
+    pm.put(s.id)
+    ops.poll_once()
+    pm.processes.clear()
+    clock.advance()
+    ops.poll_once()
+    pm.put(s.id, online=False)
+    clock.advance()
+    ops.poll_once()
+    assert pm.calls == []
+
+
+def test_daemon_restore_failure_retry_budget_persists(tmp_path, monkeypatch):
+    monkeypatch.setattr("net_utils.find_port_holder", lambda _: None)
+    s = replace(service(), port=12340)
+    ops, pm, health, clock = daemon_operations(tmp_path, [s])
+    pm.put(s.id)
+    ops.poll_once()
+    pm.processes.clear()
+    pm.fail_start.add(s.id)
+    pm.boot = "106:6"
+    for _ in range(5):
+        clock.advance(60)
+        ops = ServiceOperations(ops.registry, pm, health, tmp_path, clock=clock, monotonic_clock=clock)
+        ops.poll_once()
+    assert pm.calls == [("start", s.id)] * 3
+    assert ops.recovery_status(s.id)["status"] == "failed"
+    assert "SECRET" not in ops.path.read_text()
+
+
+def test_durable_manual_stop_overrides_autostart_after_controller_restart(tmp_path):
+    s = service(autostart=True)
+    ops, pm, health, clock = operations(tmp_path, [s])
+    ops.record_action(s.id, "stop")
+    reloaded = ServiceOperations(ops.registry, pm, health, tmp_path, clock=clock, monotonic_clock=clock)
+    reloaded.autostart()
+    assert pm.calls == []
+
+
+def test_manual_stop_during_daemon_readiness_cancels_restoration(tmp_path, monkeypatch):
+    monkeypatch.setattr("net_utils.find_port_holder", lambda _: None)
+    s = replace(service(), port=12340)
+    ops, pm, health, clock = daemon_operations(tmp_path, [s])
+    pm.put(s.id)
+    ops.poll_once()
+    pm.processes.clear()
+    pm.boot = "107:7"
+    def stop_during_probe(svc):
+        health.on_probe = None
+        pm.stop(svc)
+        ops.record_action(svc.id, "stop")
+    health.on_probe = stop_during_probe
+    clock.advance()
+    ops.poll_once()
+    assert ops.recovery_status(s.id)["desired_state"] == "stopped"
+    assert ops.recovery_status(s.id)["status"] is None
+    assert not any(e["type"] == "daemon_restore_succeeded" for e in ops.events(s.id)["events"])
+
+
+def test_newer_nonlistening_orphan_blocks_daemon_recovery(tmp_path, monkeypatch):
+    monkeypatch.setattr("net_utils.find_port_holder", lambda _: None)
+    s = replace(service(), port=12340)
+    ops, pm, _, clock = daemon_operations(tmp_path, [s])
+    pm.put(s.id, pid=17)
+    ops.poll_once()
+    # The saved PID died, but PM2 started a different app before itself died.
+    pm.processes.clear()
+    pm.boot = "108:8"
+    pm.runtime_identity_alive = lambda *_: False
+    pm.recovery_process_conflict = lambda _: True
+    clock.advance()
+    ops.poll_once()
+    assert pm.calls == []
+    assert ops.recovery_status(s.id)["reason"] == "previous_process_unconfirmed"

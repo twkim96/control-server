@@ -885,3 +885,49 @@ def test_live_rotation_below_threshold_launches_no_pm2_client(tmp_path: Path) ->
     manager.activate_service(service)
     manager._log.log_path(service.id).write_text("small")
     assert manager.rotate_running_logs((service,)) == 0
+
+
+def test_snapshot_retains_daemon_identity_even_with_no_apps(tmp_path):
+    replies = iter([
+        [{"control_pm2_daemon_id": "123:456.25"}],
+        [{"control_pm2_daemon_id": "123:789"}],
+    ])
+    manager = _manager(tmp_path, lambda *_: CommandResult(0, json.dumps(next(replies)), ""))
+    assert manager.recovery_snapshot() == ({}, "123:456.25")
+    assert manager.recovery_snapshot() == ({}, "123:789")
+    assert manager.daemon_identity() == "123:789"
+
+
+def test_failed_snapshot_never_becomes_authoritative_daemon_recovery(tmp_path):
+    replies = iter([CommandResult(0, '[{"control_pm2_daemon_id":"123:456"}]', ""),
+                    CommandResult(1, "[]", "")])
+    manager = _manager(tmp_path, lambda *_: next(replies))
+    manager.recovery_snapshot()
+    with pytest.raises(Pm2Error):
+        manager.recovery_snapshot()
+    assert manager.daemon_identity() == "123:456"
+
+
+def test_recovery_conflict_detects_matching_process_before_it_listens(tmp_path):
+    service = _service(tmp_path)
+    orphan = Mock()
+    orphan.info = {"pid": 456, "uids": Mock(real=os.getuid())}
+    orphan.cmdline.return_value = list(service.command)
+    orphan.cwd.return_value = str(tmp_path)
+    orphan.status.return_value = psutil.STATUS_RUNNING
+    orphan.exe.return_value = service.command[0]
+    with patch("pm2_manager.psutil.process_iter", return_value=[orphan]):
+        assert Pm2Manager.recovery_process_conflict(service) is True
+    orphan.cmdline.side_effect = psutil.AccessDenied(456)
+    with patch("pm2_manager.psutil.process_iter", return_value=[orphan]):
+        assert Pm2Manager.recovery_process_conflict(service) is None
+    orphan.exe.return_value = "/usr/bin/login"
+    with patch("pm2_manager.psutil.process_iter", return_value=[orphan]):
+        assert Pm2Manager.recovery_process_conflict(service) is False
+
+
+def test_recovery_without_any_matching_orphan_can_proceed(tmp_path):
+    with patch("pm2_manager.psutil.process_iter", return_value=[]):
+        assert Pm2Manager.recovery_process_conflict(_service(tmp_path)) is False
+    shell = replace(_service(tmp_path), command=("bash", "run.sh"))
+    assert Pm2Manager.recovery_process_conflict(shell) is None

@@ -2,8 +2,7 @@
 
 전체 상태(state)를 다음 7개 중 하나로 분류한다:
 * running           : PID 살아있고 (health 비활성 OR health 통과)
-* running_external  : 컨트롤 서버가 띄우지 않았지만 health URL이 정상 응답
-                      (외부 터미널/다른 launchd로 떠 있는 인스턴스)
+* running_external  : 외부 프로세스 identity와 health가 확인됨
 * unhealthy         : PID 살아있지만 health 실패
 * stopped           : 추적 중인 PID 없음 + health도 응답 없음
 * starting          : start_time 직후 (PID 살아있고 아직 health 첫 응답 전)
@@ -14,7 +13,7 @@
 * PID 살아있으면 우선 살아있음 인정.
 * health URL이 있으면 HTTP 요청으로 추가 검증.
 * 포트는 보조 정보. health 실패 시 포함하면 디버깅에 유리.
-* `lifecycle.unmanaged_policy: status_only`일 때만 외부 인스턴스를 인식한다.
+* 외부 소유 여부는 health와 독립적으로 관찰한다.
 """
 
 from __future__ import annotations
@@ -47,7 +46,7 @@ STARTING_GRACE_SECONDS = 3.0
 class HealthResult:
     state: str
     alive: bool
-    unmanaged: bool  # True면 외부 인스턴스가 health에 응답 중
+    unmanaged: bool  # 외부 holder 또는 확인되지 않은 응답이 관찰됨
     unmanaged_pid: int | None  # 외부 인스턴스의 PID (있으면)
     pid: int | None
     pgid: int | None
@@ -147,11 +146,12 @@ class HealthChecker:
             health_info = _health_skipped()
 
         adoption_evaluation: AdoptEvaluation | None = None
-        # 외부 health OK인 경우 한 번의 evaluation을 입양/상태/진단에서 공유한다.
-        if not alive and external_eligible and health_info.get("ok") is True:
-            adoption_evaluation = self._pm.evaluate_adopt(
-                service, health_ok=health_info.get("ok") is True
-            )
+        # Fresh policy-independent observation; reuse the health result, including
+        # failures, so identity checking never performs a second network probe.
+        if not alive:
+            evaluator = getattr(self._pm, "evaluate_external_identity", None)
+            if callable(evaluator):
+                adoption_evaluation = evaluator(service, health_ok=health_info.get("ok") is True)
 
         # manage 정책 + 외부 health OK → 입양 시도.
         if (
@@ -183,20 +183,29 @@ class HealthChecker:
                 phase = "starting"
             else:
                 phase = "unhealthy"
-        elif external_eligible and health_info.get("ok") is True:
-            # 외부 인스턴스가 답하고 있다 (입양 실패했거나 status_only).
-            phase = "running_external"
-            unmanaged = True
-            # 포트를 점유한 프로세스 PID를 알아낸다.
-            if adoption_evaluation is not None:
-                unmanaged_pid = adoption_evaluation.diagnostics.candidate_pid
         else:
+            diagnostics = adoption_evaluation.diagnostics if adoption_evaluation else None
+            unmanaged_pid = diagnostics.candidate_pid if diagnostics else None
+            endpoint_observed = health_info.get("ok") is True or "status_code" in health_info
+            unmanaged = unmanaged_pid is not None or endpoint_observed
+            identity_verified = bool(
+                adoption_evaluation
+                and adoption_evaluation.candidate is not None
+                and (diagnostics.ok or diagnostics.reason == "health_failed")
+            )
             never_started = (
                 state.pid is None
                 and state.last_exit_time is None
                 and not state.extra.get("pm2_status")
             )
-            phase = "unknown" if never_started else "stopped"
+            if unmanaged and identity_verified and health_info.get("ok") is True:
+                phase = "running_external"
+            elif unmanaged and identity_verified and health_info.get("ok") is False:
+                phase = "unhealthy"
+            elif unmanaged:
+                phase = "unknown"
+            else:
+                phase = "unknown" if never_started else "stopped"
 
         port_check = None
         if include_port_check and service.port is not None:

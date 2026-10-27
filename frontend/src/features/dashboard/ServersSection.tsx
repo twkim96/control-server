@@ -19,6 +19,12 @@ import { ServiceGroupControls } from "./ServiceGroupControls";
 
 const ISSUE_STATES: ServiceStatePhase[] = ["unhealthy", "unknown"];
 
+function hasIssue(service: ServiceMeta): boolean {
+  const runtime = service.runtime;
+  return !runtime || ISSUE_STATES.includes(runtime.state) ||
+    runtime.daemon_recovery?.status === "blocked" || runtime.daemon_recovery?.status === "failed";
+}
+
 export interface ServersSectionProps {
   // 검색/필터 도구를 표시할지. Main에서는 끄고, Servers 탭에서는 켠다.
   showToolbar?: boolean;
@@ -106,6 +112,7 @@ export function ServersSection({ showToolbar = true }: ServersSectionProps) {
         <DashboardToolbar
           total={total}
           running={running}
+          issues={list.filter(hasIssue).length}
           search={search}
           onSearchChange={setSearch}
           filter={filter}
@@ -244,7 +251,7 @@ function filterServices(
         s.runtime?.state === "running" || s.runtime?.state === "running_external"
       );
     if (filter === "stopped") return s.runtime?.state === "stopped";
-    if (filter === "issues") return s.runtime ? ISSUE_STATES.includes(s.runtime.state) : true;
+    if (filter === "issues") return hasIssue(s);
     return true;
   });
 }
