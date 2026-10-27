@@ -94,3 +94,108 @@ def test_real_engine_upgrade_preserves_service_states_and_is_idempotent(monkeypa
             time.sleep(0.1)
         assert not pid_file.exists(), "isolated daemon cleanup did not complete"
         shutil.rmtree(root)
+
+
+@pytest.mark.parametrize("rollback", [False, True], ids=["upgrade", "forced-rollback"])
+def test_real_engine_never_executes_inactive_apps(rollback):
+    """Count launches throughout cutover, not just final stopped/errored status."""
+    repo = Path(__file__).resolve().parents[2]
+    previous = Path(os.environ.get("CONTROL_TEST_PM2_PREVIOUS_CLI", repo / "ops/pm2/node_modules/pm2/bin/pm2")).resolve()
+    candidate = Path(os.environ.get("CONTROL_TEST_PM2_CANDIDATE_CLI", repo / "ops/pm2/node_modules/pm2/bin/pm2")).resolve()
+    previous_version = json.loads((previous.parents[1] / "package.json").read_text())["version"]
+    target_version = json.loads((candidate.parents[1] / "package.json").read_text())["version"]
+    if previous_version == target_version:
+        pytest.skip("supply distinct installed CONTROL_TEST_PM2_PREVIOUS_CLI and CONTROL_TEST_PM2_CANDIDATE_CLI")
+    node = shutil.which("node")
+    assert node
+    root = Path(tempfile.mkdtemp(prefix="cs-noexec-", dir="/private/tmp"))
+    runtime = root / "runtime"
+    env = {**os.environ, "CONTROL_PM2_NODE": node, "CONTROL_PM2_CLI": str(previous),
+           "CONTROL_PYTHON": sys.executable, "CONTROL_PM2_HOME": str(runtime / "pm2"),
+           "CONTROL_PM2_ENGINE_CLI": "", "CONTROL_PM2_ENGINE_TOKEN": ""}
+    wrapper = str(repo / "scripts/pm2ctl.sh")
+
+    def pm2(*args):
+        return subprocess.run([wrapper, *args], env=env, text=True, capture_output=True, timeout=60, check=True)
+
+    def snapshot():
+        return json.loads(pm2("__engine_snapshot").stdout.strip().splitlines()[-1])
+
+    def counts():
+        return {sid: (root / f"{sid}.count").read_text().count("launch\n") for sid in ["stopped", "errored"]}
+
+    app = root / "app.cjs"
+    app.write_text("const fs=require('fs');fs.appendFileSync(process.argv[2],'launch\\n');"
+                   "if(process.argv[3]==='errored')process.exit(1);else setInterval(()=>{},1000);\n")
+    try:
+        for sid in ["running", "stopped", "errored"]:
+            manifest = root / f"{sid}.json"
+            manifest.write_text(json.dumps({"apps": [{
+                "name": f"server-control--{sid}", "script": str(app), "interpreter": node,
+                "args": [str(root / f"{sid}.count"), sid], "cwd": str(root),
+                "min_uptime": 10000, "max_restarts": 1, "autorestart": True,
+                "out_file": str(root / "out.log"), "error_file": str(root / "err.log"),
+            }]}))
+            pm2("start", str(manifest))
+            deadline = time.monotonic() + 10
+            while not (root / f"{sid}.count").exists() and time.monotonic() < deadline:
+                time.sleep(0.05)
+            assert (root / f"{sid}.count").exists()
+            if sid == "stopped":
+                pm2("stop", f"server-control--{sid}")
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            before = snapshot()
+            if any(p["name"] == "server-control--errored" and p["status"] == "errored" and not p["pid"] for p in before["processes"]):
+                break
+            time.sleep(0.1)
+        else:
+            pytest.fail("fixture did not enter errored state")
+        baseline = counts()
+        # Reuse installed packages, with an injected post-cutover health failure
+        # for rollback. Every PM2 operation itself uses the real daemon and CLI.
+        driver = root / "update.mjs"
+        driver.write_text("""
+import fs from 'node:fs/promises';
+import path from 'node:path';
+const [modulePath,runtimeDir,appRoot,candidate,target,rollback] = process.argv.slice(2);
+const {updateEngine,runCaptured,packageVersion} = await import(modulePath);
+let candidateActive=false;
+const result=await updateEngine({runtimeDir,appRoot,configPath:'unused',hooks:{
+  latest:async()=>target,
+  install:async(prefix)=>{await fs.mkdir(path.join(prefix,'node_modules'),{recursive:true});
+    await fs.symlink(path.resolve(candidate,'../..'),path.join(prefix,'node_modules/pm2'));},
+  execute:async(command,args,options)=>{const output=await runCaptured(command,args,options);
+    if(args[0]==='update')candidateActive=packageVersion(options.env.CONTROL_PM2_ENGINE_CLI)===target;
+    return output;},
+  healthTargets:async()=>[{name:'server-control--running'}],
+  probeHealth:async()=>rollback!=='true'||!candidateActive,
+  verifyTimeout:0,pollInterval:0,
+}});
+process.stdout.write(JSON.stringify({status:result.status,rolled_back:result.rolled_back})+'\\n');
+""")
+        result = subprocess.run([node, str(driver), str(repo / "lib/pm2-engine.mjs"), str(runtime),
+                                 str(repo), str(candidate), target_version, str(rollback).lower()],
+                                env=env, capture_output=True, text=True, timeout=180, check=True)
+        job = json.loads(result.stdout.strip().splitlines()[-1])
+        assert job["status"] == ("failed" if rollback else "succeeded")
+        if rollback:
+            assert job["rolled_back"] is True
+        after = snapshot()
+        assert after["version"] == (previous_version if rollback else target_version)
+        assert counts() == baseline, "inactive app executed during engine update/rollback"
+        for item in after["processes"]:
+            if item["name"] == "server-control--running":
+                assert item["status"] == "online" and item["pid"] > 0
+            else:
+                assert item["status"] == "stopped" and item["pid"] == 0
+        print(f"isolated {previous_version}->{target_version}, rollback={rollback}: inactive launch counts unchanged {baseline}")
+    finally:
+        current = runtime / "pm2-engine/current/node_modules/pm2/bin/pm2"
+        subprocess.run([node, str(current if current.is_file() else previous), "kill"],
+                       env={**env, "PM2_HOME": str(runtime / "pm2")}, capture_output=True, timeout=45, check=False)
+        deadline = time.monotonic() + 5
+        while (runtime / "pm2/pm2.pid").exists() and time.monotonic() < deadline:
+            time.sleep(0.1)
+        assert not (runtime / "pm2/pm2.pid").exists(), "isolated daemon cleanup did not complete"
+        shutil.rmtree(root)

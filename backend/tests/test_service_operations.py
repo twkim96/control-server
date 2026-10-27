@@ -776,3 +776,21 @@ def test_observation_only_switch_blocks_all_automatic_start_paths(tmp_path, monk
     health.ok[s.id]=False
     ops.poll_once()
     assert pm.calls == []
+
+
+def test_daemon_blocker_reason_refreshes_when_stopped_entry_appears(tmp_path, monkeypatch):
+    monkeypatch.setattr("net_utils.find_port_holder", lambda _: {"pid": 55})
+    s = replace(service(), port=12340)
+    ops, pm, _, clock = daemon_operations(tmp_path, [s])
+    pm.put(s.id)
+    ops.poll_once()
+    pm.processes.clear()
+    pm.boot = "104:4"
+    clock.advance()
+    ops.poll_once()
+    assert ops.recovery_status(s.id)["reason"] == "external_port_occupied"
+    pm.put(s.id, online=False)
+    clock.advance()
+    ops.poll_once()
+    assert ops.recovery_status(s.id)["reason"] == "existing_pm2_entry"
+    assert pm.calls == []

@@ -31,6 +31,10 @@ PM2 stop의 primary signal은 `SIGINT`입니다. 설정된 timeout과 `SIGTERM` 
 않았는지 확인한 결과여야 합니다. `always_on`, stop/restart 표시 위치와 확인 정책은
 UI 위험 액션 배치에 반영하며 설정을 보존합니다.
 
+PM2 항목이 중지됐더라도 미리 확인한 PID·생성 시각의 프로세스나 listener가 남거나
+관측 권한이 없으면 성공으로 처리하지 않습니다. 추적하지 못한 detached 자식의 부재까지
+보증하지 않으며, 불명확한 PID에 추가 종료 신호를 보내지 않습니다.
+
 실행 중 정의 제거 또는 command/cwd/env/종료 계약·PM2 재시작 정책·로그 출력 대상 변경은
 reload에서 거부합니다.
 먼저 서비스를 중지한 뒤 편집합니다. 상세 절차는 [설정](configuration.md)에 있습니다.

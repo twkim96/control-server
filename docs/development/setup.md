@@ -78,6 +78,11 @@ RUN_PM2_INTEGRATION=1 .venv/bin/pytest -q backend/tests/test_pm2_integration.py
 RUN_PM2_ENGINE_INTEGRATION=1 .venv/bin/pytest -q backend/tests/test_pm2_engine_integration.py
 ```
 
+비실행 앱의 추가 실행 방지 검사는 서로 다른 설치 버전의
+`CONTROL_TEST_PM2_PREVIOUS_CLI`와 `CONTROL_TEST_PM2_CANDIDATE_CLI`를 지정합니다.
+패키지는 읽기 전용으로 재사용하며, daemon과 실행 횟수 fixture는 격리된 짧은
+`PM2_HOME` 안에 만듭니다. 두 버전이 같으면 해당 검사는 skip합니다.
+
 이 opt-in 검사는 격리된 PM2_HOME과 fixture를 사용합니다. engine 검사는 npm download를
 포함합니다. 담당자는 전체 exit 결과와 fixture daemon/자식 정리까지 확인합니다.
 일반 suite에서 skip한 실제 integration을 통과했다고 기록하지 않습니다.

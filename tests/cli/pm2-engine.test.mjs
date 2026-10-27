@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { engineLayout, updateEngine, statesMatch, validateSnapshot, packageVersion, runCaptured } from "../../lib/pm2-engine.mjs";
+import { engineLayout, updateEngine, statesMatch, validateSnapshot, packageVersion, runCaptured, writeSafeRestoreDump } from "../../lib/pm2-engine.mjs";
 import { withFileLock, withManagedLock, atomicWriteJson } from "../../lib/transaction.mjs";
 import { parseArgs } from "../../lib/cli.mjs";
 
@@ -38,7 +38,7 @@ async function fixture(callback) {
     execute: async (_command, args, options) => {
       const version = packageVersion(options.env.CONTROL_PM2_ENGINE_CLI);
       commands.push({ version, args });
-      if (args[0] === "save") await fs.promises.writeFile(path.join(layout.pm2Home, "dump.pm2"), JSON.stringify(state));
+      if (args[0] === "save") await fs.promises.writeFile(path.join(layout.pm2Home, "dump.pm2"), JSON.stringify(state.processes));
       if (args[0] === "update") {
         if (version === "7.0.3" && failRecovery) throw new Error("simulated old engine failure");
         if (version !== "7.0.4" || applyCandidate) state.version = version;
@@ -182,4 +182,51 @@ test("ordinary PM2 calls wait for another poll but reject an active engine cutov
   await withFileLock(f.layout.maintenanceLock, async () => {
     await assert.rejects(command(), /exit 75/);
   });
+}));
+
+test("non-running dump entries are non-executable before resurrect, including legacy journals", async () => fixture(async (f) => {
+  const source = path.join(f.root, "old.pm2"), target = path.join(f.root, "safe.pm2");
+  const before = {processes:[
+    {name:"server-control--running",status:"online",pid:101},
+    {name:"server-control--stopped",status:"stopped",pid:0},
+    {name:"server-control--errored",status:"errored",pid:0},
+  ]};
+  await atomicWriteJson(source, before.processes.map(item => ({...item,instances:1,autostart:true,_tree_pids:[999]})));
+  await writeSafeRestoreDump(source,target,before);
+  const restored = JSON.parse(fs.readFileSync(target));
+  assert.equal(restored[0].status,"online");
+  for (const item of restored.slice(1)) {
+    assert.equal(item.status,"stopped");
+    assert.equal(item.autostart,false);
+    assert.equal("instances" in item,false);
+    assert.equal("_tree_pids" in item,false);
+  }
+  assert.equal(JSON.parse(fs.readFileSync(source))[2].status,"errored");
+  assert.equal(fs.statSync(target).mode & 0o777,0o600);
+}));
+
+test("malformed or mismatched saved membership is refused before restore mutations", async () => fixture(async (f) => {
+  const source=path.join(f.root,"bad.pm2"),target=path.join(f.root,"safe.pm2");
+  for (const payload of [{processes:[]},[],[null],[{name:"server-control--unexpected"}]]) {
+    await atomicWriteJson(source,payload);
+    await assert.rejects(writeSafeRestoreDump(source,target,f.state()));
+    assert.equal(fs.existsSync(target),false);
+  }
+}));
+
+test("errored app is stopped before engine update and before rollback update", async () => fixture(async (f) => {
+  f.state().processes[1].status="errored";
+  f.noCandidateVersion();
+  const execute=f.hooks.execute;
+  f.hooks.execute=async (command,args,options) => {
+    if (args[0]==="update") {
+      assert.ok(f.state().processes.every(item=>item.status!=="errored"));
+    }
+    return execute(command,args,options);
+  };
+  const result=await updateEngine(f.options);
+  assert.equal(result.rolled_back,true);
+  const firstUpdate=f.commands.findIndex(command=>command.args[0]==="update");
+  const stopped=f.commands.findIndex(command=>command.args[0]==="stop");
+  assert.ok(stopped>=0 && stopped<firstUpdate);
 }));

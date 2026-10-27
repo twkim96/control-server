@@ -7,6 +7,10 @@ the 1.5.0 public distribution release onward.
 
 ### Fixed
 
+- prevent stopped/errored apps from executing during PM2 engine update or rollback;
+  normalize inactive entries before cutover and sanitize recovery dumps, including old journals
+- require captured process lifetimes and listener absence before reporting PM2 stop success;
+  expose manual external diagnostic refresh and update changed recovery blocker reasons
 - enforce durable intent before process mutations, migrate legacy stopped state before
   autostart, and apply the same intent/conflict checks to automatic startup
 - reject stale forced snapshots after concurrent refresh failures, conservatively block
@@ -24,6 +28,8 @@ the 1.5.0 public distribution release onward.
 
 ### Verification boundary
 
+- isolated real PM2 7.1.0→7.1.1 upgrade and forced rollback preserved inactive launch
+  counts; the pre-fix rollback reproduced additional errored launches
 - isolated daemon-signal recovery and focused backend/frontend regressions are verified
   separately from production deployment; live service restart and browser acceptance remain pending
 - automatic recovery blocks portless workers and ambiguous exec wrappers for manual verification

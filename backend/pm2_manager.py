@@ -793,6 +793,7 @@ class Pm2Manager:
                 if command_error is not None:
                     raise command_error
                 raise Pm2Error(f"{service_id}: PM2 stop did not reach stopped state")
+            _confirm_stop_complete(identities, selected_service)
             if selected_service is not None:
                 self._rotate_service_log(selected_service)
             return self.get_state(service_id)
@@ -1121,15 +1122,42 @@ def _process_tree_identities(pid: int | None) -> tuple[tuple[int, float], ...]:
         # Signal descendants first. If the root exits on an earlier signal,
         # SIGTERM-only children still receive the configured fallback.
         processes = [*root.children(recursive=True), root]
-    except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+    except psutil.NoSuchProcess:
         return ()
+    except (psutil.AccessDenied, OSError) as exc:
+        raise Pm2Error("PM2 stop 대상의 자식 프로세스를 확인하지 못했습니다.") from exc
     identities: list[tuple[int, float]] = []
     for process in processes:
         try:
             identities.append((process.pid, process.create_time()))
-        except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+        except psutil.NoSuchProcess:
             continue
+        except (psutil.AccessDenied, OSError) as exc:
+            raise Pm2Error("PM2 stop 대상의 프로세스 신원을 확인하지 못했습니다.") from exc
     return tuple(identities)
+
+
+def _confirm_stop_complete(identities, service, *, timeout_seconds=1.0):
+    """Observe captured lifetimes and the listener; never signal uncertain PIDs."""
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        remaining = False
+        for pid, created_at in identities:
+            try:
+                process = psutil.Process(pid)
+                if (abs(process.create_time() - created_at) < 1e-6
+                        and process.is_running() and process.status() != psutil.STATUS_ZOMBIE):
+                    remaining = True
+            except psutil.NoSuchProcess:
+                continue
+            except (psutil.AccessDenied, OSError) as exc:
+                raise Pm2Error("PM2 stop 후 추적 프로세스의 종료를 확인하지 못했습니다.") from exc
+        occupied = service is not None and service.port is not None and find_port_holder(service.port) is not None
+        if not remaining and not occupied:
+            return
+        if time.monotonic() >= deadline:
+            raise Pm2Error("PM2 항목은 중지됐지만 추적 프로세스 또는 listener가 남아 있습니다.")
+        time.sleep(0.05)
 
 
 def _send_fallback_signals(

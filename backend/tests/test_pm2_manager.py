@@ -1008,3 +1008,56 @@ def test_daemon_lifetime_uses_os_birth_and_missing_pid_file_is_inconclusive(tmp_
         assert manager._verified_daemon_identity('123:999')=='123:456.75'
         pidfile.unlink()
         assert manager._verified_daemon_identity('123:999') is None
+
+
+@pytest.mark.parametrize("residual", ["child", "unknown_child", "listener"])
+def test_stop_does_not_report_success_for_residual_or_unknown_process(tmp_path, residual):
+    online = True
+
+    def runner(argv, _env, _timeout):
+        nonlocal online
+        if argv[1] == "stop":
+            online = False
+        return CommandResult(0, json.dumps([{
+            "name": "server-control--example", "pid": 88 if online else 0,
+            "pm2_env": {"status": "online" if online else "stopped"},
+        }]), "")
+
+    manager = _manager(tmp_path, runner)
+    child = Mock()
+    child.create_time.return_value = 2.0
+    child.is_running.return_value = True
+    child.status.return_value = psutil.STATUS_SLEEPING
+    processes = psutil.AccessDenied(99) if residual == "unknown_child" else None
+    identities = () if residual == "listener" else ((99, 2.0),)
+    with (
+        patch("pm2_manager._process_tree_identities", return_value=identities),
+        patch("pm2_manager.psutil.Process", return_value=child, side_effect=processes),
+        patch("pm2_manager.find_port_holder", return_value={"pid": None} if residual == "listener" else None),
+        patch("pm2_manager.os.kill") as kill,
+    ):
+        with pytest.raises(Pm2Error, match="종료를 확인|남아 있습니다"):
+            manager.stop(_service(tmp_path))
+    assert online is False
+    kill.assert_not_called()
+
+
+def test_stop_completion_does_not_confuse_reused_pid_with_captured_child(tmp_path):
+    from pm2_manager import _confirm_stop_complete
+    reused = Mock()
+    reused.create_time.return_value = 3.0
+    with (
+        patch("pm2_manager.psutil.Process", return_value=reused),
+        patch("pm2_manager.find_port_holder", return_value=None),
+    ):
+        _confirm_stop_complete(((99, 2.0),), _service(tmp_path), timeout_seconds=0)
+
+
+def test_stop_refuses_unobservable_tree_before_sending_signals(tmp_path):
+    payload = [{"name": "server-control--example", "pid": 88, "pm2_env": {"status": "online"}}]
+    runner = Mock(return_value=CommandResult(0, json.dumps(payload), ""))
+    manager = _manager(tmp_path, runner)
+    with patch("pm2_manager.psutil.Process", side_effect=psutil.AccessDenied(88)):
+        with pytest.raises(Pm2Error, match="자식 프로세스"):
+            manager.stop(_service(tmp_path))
+    assert all(call.args[0][1] != "stop" for call in runner.call_args_list)

@@ -190,7 +190,7 @@ export function ServerRowDetails({ service, onMutated, onOpenLogs }: ServerRowDe
           <div className={classes.detailsGrid}>
             <Detail label="EXTERNAL DIAGNOSTICS">
               <ExternalDiagnostics
-                key={JSON.stringify([service.id, service.runtime?.state, externalPid, service.runtime?.health.ok])}
+                key={JSON.stringify([service.id, service.runtime?.state, externalPid, service.runtime?.health.ok, service.runtime?.adopt_diagnostics])}
                 serviceId={service.id}
                 provided={service.runtime?.adopt_diagnostics}
               />
@@ -451,6 +451,7 @@ export function ServerRowDetails({ service, onMutated, onOpenLogs }: ServerRowDe
 function ExternalDiagnostics({ serviceId, provided }: { serviceId: string; provided?: AdoptDiagnostics }) {
   const [diagnostics, setDiagnostics] = useState<AdoptDiagnostics>();
   const [error, setError] = useState<string>();
+  const [refreshing, setRefreshing] = useState(false);
   useEffect(() => {
     if (provided) return;
     let cancelled = false;
@@ -463,11 +464,22 @@ function ExternalDiagnostics({ serviceId, provided }: { serviceId: string; provi
       });
     return () => { cancelled = true; };
   }, [serviceId, provided]);
-  const current = provided ?? diagnostics;
-  if (!current && error) return <span className={classes.detailValueMuted}>진단 조회 실패: {error}</span>;
-  if (!current) return <span className={classes.detailValueMuted}>진단 확인 중…</span>;
+  const current = diagnostics ?? provided;
   return (
     <span className={classes.detailValueMuted}>
+      <Button size="sm" disabled={refreshing} loading={refreshing} onClick={async () => {
+        setRefreshing(true);
+        setError(undefined);
+        try {
+          const detail = await getService(serviceId);
+          setDiagnostics(detail.runtime?.adopt_diagnostics);
+        } catch (err) {
+          setError(describeError(err));
+        } finally {
+          setRefreshing(false);
+        }
+      }}>진단 새로고침</Button>{" "}
+      {error ? `진단 조회 실패: ${error}` : !current ? "진단 확인 중…" : <>
       {current.reason}
       {current.candidate_pid ? ` · candidate pid ${current.candidate_pid}` : ""}
       {current.health_ok !== null ? ` · health=${current.health_ok ? "ok" : "failed"}` : ""}
@@ -476,6 +488,7 @@ function ExternalDiagnostics({ serviceId, provided }: { serviceId: string; provi
       {current.actual_cmdline ? ` · actual: ${formatCommand(current.actual_cmdline)}` : ""}
       {current.cwd_expected ? ` · cwd expected: ${current.cwd_expected}` : ""}
       {current.cwd_actual ? ` · cwd actual: ${current.cwd_actual}` : ""}
+      </>}
     </span>
   );
 }

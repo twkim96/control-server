@@ -104,6 +104,8 @@ def _login(client) -> str:
 
 
 def test_pm2_backend_preserves_service_api_contract(tmp_path: Path, monkeypatch) -> None:
+    # FakePm2 uses the pytest PID for resource metadata; it never owns/stops it.
+    monkeypatch.setattr("pm2_manager._process_tree_identities", lambda _: ())
     monkeypatch.setenv(PASSWORD_ENV, "secret")
     config = tmp_path / "config.yml"
     _config(config, tmp_path)
@@ -474,6 +476,8 @@ def test_pm2_slow_cold_start_does_not_delay_control_server_or_list_api(
 
 
 def test_manual_action_records_history_and_keeps_stopped_pm2_metadata(tmp_path, monkeypatch):
+    # Model a virtual process, rather than expecting fake stop to kill pytest.
+    monkeypatch.setattr("pm2_manager._process_tree_identities", lambda _: ())
     monkeypatch.setenv(PASSWORD_ENV, "secret")
     config = tmp_path / "config.yml"
     _config(config, tmp_path)

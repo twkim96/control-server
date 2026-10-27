@@ -710,7 +710,7 @@ class ServiceOperations:
                 return
             if fresh is not None and not fresh.alive:
                 with self._lock:
-                    if status != "blocked":
+                    if status != "blocked" or entry.get("daemon_restore_reason") != "existing_pm2_entry":
                         entry["daemon_restore_status"] = "blocked"
                         entry["daemon_restore_reason"] = "existing_pm2_entry"
                         self._event(sid, "daemon_restore_blocked")

@@ -30,6 +30,13 @@ daemon 버전, 이전 실행/중지 상태와 전환 전에 정상인 health tar
 복구만 완료되면 새 업데이트는 별도 요청합니다. 절차는
 [관리형 복구](../operations/recovery.md#failed-or-interrupted-pm2-engine-update-153)를 따릅니다.
 
+전환 직전 비실행 항목(`stopped`/`errored`)은 PM2 `stop`으로 중지 상태와 PID 부재를
+확인합니다. 복구 dump도 같은 항목을 `stopped`, `autostart:false`로 기록하고 실행 분기를
+선택하는 `instances`와 오래된 `_tree_pids`를 제거한 별도 파일로 복원합니다. 기존 journal도
+목록·이름 일치를 검증하고 같은 처리를 적용하며 원본 백업은 보존합니다. 최종 상태만
+맞추기 위해 일시 실행한 뒤 중지하는 방식은 허용하지 않습니다. 오류 원문 상태는
+중지 상태로 바뀔 수 있으나, 실행하지 않는 의도는 유지합니다.
+
 앱 포인터/metadata 변경에는 이 engine journal이 적용되지 않습니다. 실제 pre-1.5.3 앱
 rollback의 독립 엔진 호환은 아직 검증되지 않았습니다.
 
@@ -40,5 +47,6 @@ rollback의 독립 엔진 호환은 아직 검증되지 않았습니다.
 - `frontend/src/features/settings/Pm2EngineSettings.tsx`, `frontend/src/api/system.ts`
 - 자동 회귀: `backend/tests/test_pm2_engine_api.py`, `tests/cli/pm2-engine.test.mjs`
 - 실제 격리 전환: `backend/tests/test_pm2_engine_integration.py`
+- 비실행 회귀는 실행 횟수 파일로 정상 전환·강제 rollback 중 추가 실행이 없는지 확인합니다.
 - 과거 로컬·운영 수용 기록: [CHANGELOG](../../CHANGELOG.md#153---unreleased).
   현재 release CI와 구버전 수용의 남은 조건은 [TODO](../TODO.md)에서 관리합니다.
