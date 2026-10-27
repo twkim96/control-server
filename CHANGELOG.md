@@ -7,6 +7,9 @@ the 1.5.0 public distribution release onward.
 
 ### Fixed
 
+- preserve valid automatic-recovery-disabled blocker reasons across controller restarts
+- keep verified engine state after completion-report write failures; retain recovery fencing
+  on precommit rollback failures and separate reporting errors from runtime outcomes
 - replace hidden PM2 update/resurrect with explicit daemon replacement using approved primary
   and backup dumps; preserve inactive intent when resuming interrupted recovery
 - use strict process lifetime checks, normalize PATH symlinks, retain occupied/unknown port

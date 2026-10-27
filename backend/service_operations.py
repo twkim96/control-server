@@ -39,6 +39,11 @@ _MESSAGES = {
     "daemon_restore_blocked": "PM2 recovery blocked; check external process, dependencies and configuration.",
     "daemon_restore_failed": "PM2 recovery failed; inspect service health and logs.",
 }
+_DAEMON_RESTORE_REASONS = frozenset({
+    "definition_changed", "existing_pm2_entry", "previous_process_unconfirmed",
+    "external_port_occupied", "dependency_not_ready", "dependency_missing",
+    "pm2_start_failed", "readiness_failed", "automatic_recovery_disabled",
+})
 
 
 def _definition_id(service):
@@ -153,7 +158,7 @@ class ServiceOperations:
                 "last_recovery_attempt": lambda v: v is None or (_number(v) and v >= 0),
                 "recovery_attempts": lambda v: isinstance(v, list) and all(_number(t) and t >= 0 for t in v),
                 "daemon_restore_status": lambda v: v in {"pending", "restoring", "restored", "blocked", "failed"} if isinstance(v, str) else False,
-                "daemon_restore_reason": lambda v: v in {"definition_changed", "existing_pm2_entry", "previous_process_unconfirmed", "external_port_occupied", "dependency_not_ready", "dependency_missing", "pm2_start_failed", "readiness_failed"} if isinstance(v, str) else False,
+                "daemon_restore_reason": lambda v: isinstance(v, str) and v in _DAEMON_RESTORE_REASONS,
                 "startup_blocked_reason": lambda v: v in {"previous_process_unconfirmed", "definition_changed", "automatic_recovery_disabled", "automatic_start_budget_exhausted", "dependency_not_ready", "readiness_failed"} if isinstance(v, str) else False,
             }
             if any(key in item and not check(item[key]) for key, check in valid.items()):
@@ -194,11 +199,7 @@ class ServiceOperations:
                     clean_item[key] = value
             if isinstance(item.get("daemon_restore_status"), str) and item.get("daemon_restore_status") in {"pending", "restoring", "restored", "blocked", "failed"}:
                 clean_item["daemon_restore_status"] = item["daemon_restore_status"]
-            if isinstance(item.get("daemon_restore_reason"), str) and item.get("daemon_restore_reason") in {
-                "definition_changed", "existing_pm2_entry", "previous_process_unconfirmed",
-                "external_port_occupied", "dependency_not_ready", "dependency_missing",
-                "pm2_start_failed", "readiness_failed",
-            }:
+            if isinstance(item.get("daemon_restore_reason"), str) and item["daemon_restore_reason"] in _DAEMON_RESTORE_REASONS:
                 clean_item["daemon_restore_reason"] = item["daemon_restore_reason"]
             if _number(item.get("daemon_restore_at")):
                 clean_item["daemon_restore_at"] = item["daemon_restore_at"]
@@ -769,7 +770,8 @@ class ServiceOperations:
             except Exception as exc:
                 with self._lock:
                     outcome = "blocked" if isinstance(exc, OperationsError) else "failed"
-                    entry["daemon_restore_reason"] = str(exc) if isinstance(exc, OperationsError) else "pm2_start_failed"
+                    reason = str(exc) if isinstance(exc, OperationsError) else "pm2_start_failed"
+                    entry["daemon_restore_reason"] = reason if reason in _DAEMON_RESTORE_REASONS else "pm2_start_failed"
                     if entry.get("daemon_restore_status") != outcome:
                         entry["daemon_restore_status"] = outcome
                         self._event(sid, "daemon_restore_" + outcome)

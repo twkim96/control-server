@@ -841,3 +841,35 @@ def test_daemon_blocker_reason_refreshes_when_stopped_entry_appears(tmp_path, mo
     ops.poll_once()
     assert ops.recovery_status(s.id)["reason"] == "existing_pm2_entry"
     assert pm.calls == []
+
+
+@pytest.mark.parametrize("reload_enabled", ["0", "1"])
+def test_disabled_daemon_recovery_reason_survives_restart_and_allows_manual_intent(tmp_path, monkeypatch, reload_enabled):
+    monkeypatch.setenv("CONTROL_PM2_AUTOMATIC_START", "0")
+    monkeypatch.setattr("net_utils.find_port_holder", lambda _: None)
+    s = replace(service(autostart=True), port=12340)
+    ops, pm, health, clock = daemon_operations(tmp_path, [s])
+    pm.put(s.id)
+    ops.poll_once()
+    pm.processes.clear()
+    pm.boot = "105:5"
+    clock.advance()
+    ops.poll_once()
+    saved = json.loads(ops.path.read_text())[s.id]
+    assert saved["desired_state"] == "running"
+    assert saved["daemon_restore_reason"] == "automatic_recovery_disabled"
+    assert pm.calls == []
+    monkeypatch.setenv("CONTROL_PM2_AUTOMATIC_START", reload_enabled)
+    reloaded = ServiceOperations(ops.registry, pm, health, tmp_path, clock=clock, monotonic_clock=clock)
+    assert reloaded._state_error is None
+    status = reloaded.recovery_status(s.id)
+    assert status["desired_state"] == "running"
+    assert status["reason"] == "automatic_recovery_disabled"
+    if reload_enabled == "0":
+        reloaded.autostart()
+        reloaded.poll_once()
+        assert pm.calls == []
+    reloaded.prepare_intent(s, "stop")
+    assert reloaded.recovery_status(s.id)["desired_state"] == "stopped"
+    reloaded.prepare_intent(s, "start")
+    assert reloaded.recovery_status(s.id)["desired_state"] == "running"

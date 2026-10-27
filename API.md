@@ -101,6 +101,11 @@ curl -sS -b "$COOKIE_JAR" \
 웹 작업은 마지막으로 확인한 목표 버전에 결합하며, worker가 확인한 최신 버전이 다르면
 설치·전환 전에 실패합니다. 다시 확인한 뒤 새 작업을 요청합니다.
 
+확정한 전환·복구의 완료 기록 저장에 실패하면 `job.reporting_error`는
+`completion_status_write_failed`입니다. 확인된 runtime 결과를 유지하며 보고 실패만으로
+추가 kill/rollback하지 않습니다. 계속 저장 불가 시 상태 GET은 이전 job을 볼 수 있으므로
+실제 daemon 버전과 서비스를 다시 확인합니다.
+
 업데이트 시작 응답은 HTTP **202**이며 완료를 의미하지 않습니다. 같은 GET으로 `job`을
 다시 읽고 `status` (`running`, `succeeded`, `failed`), `phase`, `message`, 선택적
 `error`, `rolled_back`을 확인합니다. 작업 시작 불가·중복 작업은

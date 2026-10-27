@@ -252,3 +252,73 @@ test("unsupported execution triggers are refused before daemon cutover", async (
     assert.deepEqual(f.commands,[]);
   }
 }));
+
+async function failCompletionWrites(f, operation) {
+  const originalRename=fs.promises.rename;
+  let failed=0;
+  fs.promises.rename=async (source,target) => {
+    if (target===f.layout.job) {
+      const payload=JSON.parse(await fs.promises.readFile(source,'utf8'));
+      if (payload.phase==='complete') {
+        failed++;
+        const error=new Error('injected completion write failure');
+        error.code='EIO';
+        throw error;
+      }
+    }
+    return originalRename(source,target);
+  };
+  try {await operation();assert.ok(failed>0);} finally {fs.promises.rename=originalRename;}
+}
+
+test('completion write failure preserves committed runtime without another kill/resurrect', async () => fixture(async (f) => {
+  await failCompletionWrites(f,async()=>{
+    const result=await updateEngine(f.options);
+    assert.equal(result.status,'succeeded');
+    assert.equal(result.reporting_error,'completion_status_write_failed');
+    assert.match(result.message,/완료 상태 기록/);
+    assert.equal(f.state().version,'7.0.4');
+    assert.equal(fs.realpathSync(f.layout.current),path.join(f.layout.releases,'7.0.4'));
+    assert.equal(fs.existsSync(f.layout.recovery),false);
+    assert.equal(fs.existsSync(f.layout.owner),false);
+    assert.equal(f.commands.filter(c=>c.args[0]==='kill').length,1);
+    assert.equal(f.commands.filter(c=>c.args[0]==='resurrect').length,1);
+    assert.ok(f.state().processes.find(p=>p.name==='server-control--running').pid>0);
+  });
+}));
+
+test('rollback reporting failure preserves verified rollback outcome without another mutation', async () => fixture(async (f) => {
+  f.noCandidateVersion();
+  await failCompletionWrites(f,async()=>{
+    const result=await updateEngine(f.options);
+    assert.equal(result.status,'failed');
+    assert.equal(result.rolled_back,true);
+    assert.equal(result.reporting_error,'completion_status_write_failed');
+    assert.equal(f.state().version,'7.0.3');
+    assert.equal(fs.existsSync(f.layout.recovery),false);
+    assert.equal(fs.existsSync(f.layout.current),false);
+    assert.equal(f.commands.filter(c=>c.args[0]==='kill').length,2);
+    assert.equal(f.commands.filter(c=>c.args[0]==='resurrect').length,2);
+  });
+}));
+
+test('precommit restore and reporting failure retain the recovery journal for the next request', async () => fixture(async (f) => {
+  f.noCandidateVersion();f.failRollback();
+  await failCompletionWrites(f,async()=>{
+    const result=await updateEngine(f.options);
+    assert.equal(result.rolled_back,false);
+    assert.equal(fs.existsSync(f.layout.recovery),true);
+  });
+  const execute=f.hooks.execute;
+  f.hooks.execute=async(command,args,options)=>{
+    if(args[0]==='resurrect' && packageVersion(options.env.CONTROL_PM2_ENGINE_CLI)==='7.0.3'){
+      await execute(command,args,options).catch(()=>{});
+      f.state().version='7.0.3';return '';
+    }
+    return execute(command,args,options);
+  };
+  f.hooks.latest=()=>{throw new Error('must recover before checking latest');};
+  const result=await updateEngine(f.options);
+  assert.equal(result.rolled_back,true);
+  assert.equal(fs.existsSync(f.layout.recovery),false);
+}));
