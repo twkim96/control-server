@@ -199,26 +199,28 @@ export function ServerRowDetails({ service, onMutated, onOpenLogs }: ServerRowDe
               관리되지 않는 포트 점유 또는 health 응답이 감지되었습니다. 상태와 아래 진단을 확인하세요.
               {!canKillExternal && " 외부 종료는 identity와 health가 모두 확인된 경우에만 허용됩니다."}
             </div>
-            <Button
-              size="sm"
-              variant="danger"
-              onClick={() => setKillOpen(true)}
-              disabled={killing || takeoverBusy || !!takeoverIdentity || !canKillExternal}
-              loading={killing}
-            >
-              외부 인스턴스 종료
-            </Button>
-            {service.runtime?.takeover_supported && (
+            <div className={classes.externalActions}>
+              {service.runtime?.takeover_supported && (
+                <Button
+                  size="sm"
+                  variant="danger"
+                  onClick={() => void openTakeover()}
+                  disabled={killing || killOpen || takeoverBusy || !!takeoverIdentity || !canKillExternal}
+                  loading={takeoverBusy}
+                >
+                  PM2 관리로 전환
+                </Button>
+              )}
               <Button
                 size="sm"
                 variant="danger"
-                onClick={() => void openTakeover()}
-                disabled={killing || killOpen || takeoverBusy || !!takeoverIdentity || !canKillExternal}
-                loading={takeoverBusy}
+                onClick={() => setKillOpen(true)}
+                disabled={killing || takeoverBusy || !!takeoverIdentity || !canKillExternal}
+                loading={killing}
               >
-                PM2 관리로 전환
+                외부 인스턴스 종료
               </Button>
-            )}
+            </div>
           </div>
         )}
         {isExternal && (
