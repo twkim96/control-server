@@ -195,10 +195,6 @@ export function ServerRowDetails({ service, onMutated, onOpenLogs }: ServerRowDe
       <div className={classes.detailsPanel}>
         {isExternal && (
           <div className={classes.externalNotice}>
-            <div>
-              관리되지 않는 포트 점유 또는 health 응답이 감지되었습니다. 상태와 아래 진단을 확인하세요.
-              {!canKillExternal && " 외부 종료는 identity와 health가 모두 확인된 경우에만 허용됩니다."}
-            </div>
             <div className={classes.externalActions}>
               {service.runtime?.takeover_supported && (
                 <Button
@@ -220,6 +216,10 @@ export function ServerRowDetails({ service, onMutated, onOpenLogs }: ServerRowDe
               >
                 외부 인스턴스 종료
               </Button>
+            </div>
+            <div>
+              관리되지 않는 포트 점유 또는 health 응답이 감지되었습니다. 상태와 아래 진단을 확인하세요.
+              {!canKillExternal && " 외부 종료는 identity와 health가 모두 확인된 경우에만 허용됩니다."}
             </div>
           </div>
         )}

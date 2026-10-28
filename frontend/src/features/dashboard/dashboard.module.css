@@ -396,8 +396,8 @@
   font-size: var(--font-sm);
   line-height: 1.5;
   display: flex;
-  align-items: flex-start;
-  flex-direction: column;
+  align-items: center;
+  flex-direction: row;
   gap: var(--space-2);
 }
 
@@ -406,7 +406,7 @@
   max-width: 100%;
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
+  flex: 0 0 auto;
   gap: var(--space-2);
 }
 
