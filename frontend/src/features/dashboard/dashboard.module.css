@@ -405,6 +405,7 @@
   min-width: 0;
   max-width: 100%;
   display: flex;
+  margin-left: auto;
   align-items: center;
   flex: 0 0 auto;
   gap: var(--space-2);
