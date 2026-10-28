@@ -134,6 +134,11 @@ true일 수 있으며 상세에서 PID·health·진단을 함께 표시합니다
 보존합니다. 기본 매칭은 exact이며 prefix는 명시한 expected argv 뒤의 trailing 인자만
 허용합니다. prefix가 cwd/health/PID 검사까지 완화하지 않습니다.
 
+macOS framework Python의 `bin/python*` launcher와 같은 framework/version의
+`Resources/Python.app/Contents/MacOS/Python`은 실제 파일이 모두 확인될 때 같은 실행
+파일로 정규화합니다. venv symlink도 같은 경로로 해석하며 인자·cwd·health·PID 생성
+시각 검증은 유지합니다. 다른 framework/version이나 다른 인자는 허용하지 않습니다.
+
 외부 종료는 health가 활성화된 안전 검증 대상에만 허용합니다. 종료 직전에도
 PID/create_time, holder, cmdline/cwd/health를 다시 확인하고 controller나 다른 관리
 서비스를 종료하지 않습니다. 대상 확인 없이 외부 프로세스를 종료하는 우회 기능을
@@ -147,6 +152,11 @@ PID/create_time, holder, cmdline/cwd/health를 다시 확인하고 controller나
 동일 프로세스 생존이 불명이면 실패로 남기고 신호를 확대하지 않습니다.
 
 ## 상태 조회와 URL
+
+데스크톱 목록은 SERVICE, PORT / URL, RUNTIME, STATUS 순서입니다. PORT / URL과
+RUNTIME에 STATUS보다 넓은 공간을 배정하며, RUNTIME의 PM2 재시작 횟수는 `0`처럼
+숫자만 표시합니다. CPU·RAM·재시작 횟수 보조 행 내부는 줄바꿈하지 않습니다.
+상세 패널에서는 재시작 횟수의 의미와 관측 이력을 확인할 수 있습니다.
 
 목록은 정상 PM2 snapshot을 재사용하고 TTL 경과 시 한 번의 background refresh를
 시작합니다. 최초 snapshot이 없으면 잠시 `unknown`, 갱신이 지연되거나 실패하면

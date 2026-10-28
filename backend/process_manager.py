@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -1284,17 +1285,6 @@ def _verify_destructive_identity(service: ServiceConfig, pid: int, create_time: 
             commands.append((wrapped, False))
         if service.adopt_command is not None:
             commands.append((list(service.adopt_command), service.adopt_match == "prefix"))
-        path = service.env.get("PATH", os.environ.get("PATH", os.defpath))
-        search = os.pathsep.join(
-            p if os.path.isabs(p) else os.path.join(service.cwd, p)
-            for p in path.split(os.pathsep)
-        )
-
-        def resolve(head: str) -> str | None:
-            if os.path.dirname(head):
-                return head if os.path.isabs(head) else os.path.join(service.cwd, head)
-            return shutil.which(head, path=search)
-
         for command, prefix in commands:
             if not command or not actual:
                 continue
@@ -1304,10 +1294,10 @@ def _verify_destructive_identity(service: ServiceConfig, pid: int, create_time: 
                 continue
             if command[1:] != actual[1:len(command)]:
                 continue
-            resolved = resolve(command[0])
-            actual_head = resolve(actual[0])
-            if (resolved and actual_head and os.path.realpath(resolved) == executable
-                    and os.path.realpath(actual_head) == executable
+            resolved = _service_executable_path(service, command[0])
+            actual_head = _service_executable_path(service, actual[0])
+            if (resolved and actual_head and resolved == executable
+                    and actual_head == executable
                     and cwd == os.path.realpath(service.cwd)):
                 if _external_process_alive(pid, create_time):
                     return
@@ -1405,6 +1395,22 @@ def _service_cmdline_match(service: ServiceConfig, actual: list[str]) -> bool:
     """시작 명령, 알려진 exec 래퍼, 명시된 최종 명령과 실제 cmdline을 비교한다."""
     if _cmdline_exact_match(list(service.command), actual):
         return True
+    # macOS framework Python starts through a bin/python launcher but reports
+    # its bundle executable in argv[0]. Only the same existing framework's
+    # canonical bundle may bridge that difference; args remain exact.
+    commands = [(service.command, False)]
+    if service.adopt_command is not None:
+        commands.append((service.adopt_command, service.adopt_match == "prefix"))
+    for expected, prefix in commands:
+        if not expected or not actual or (prefix and len(expected) < 2):
+            continue
+        if len(actual) < len(expected) or (not prefix and len(actual) != len(expected)):
+            continue
+        if list(expected[1:]) != actual[1:len(expected)]:
+            continue
+        canonical = _service_executable_path(service, expected[0])
+        if canonical and canonical == _service_executable_path(service, actual[0]):
+            return True
 
     wrapped_command = _tailscale_https_exec_command(service.command)
     if wrapped_command is not None and _cmdline_exact_match(wrapped_command, actual):
@@ -1418,6 +1424,27 @@ def _service_cmdline_match(service: ServiceConfig, actual: list[str]) -> bool:
             else _cmdline_exact_match(list(service.adopt_command), actual)
         )
     )
+
+
+def _service_executable_path(service: ServiceConfig, head: str) -> str | None:
+    """Resolve PATH/cwd aliases and the verified macOS framework Python launcher."""
+    if os.path.dirname(head):
+        selected = head if os.path.isabs(head) else os.path.join(service.cwd, head)
+    else:
+        search = service.env.get("PATH", os.environ.get("PATH", os.defpath))
+        search = os.pathsep.join(p if os.path.isabs(p) else os.path.join(service.cwd, p)
+                                 for p in search.split(os.pathsep))
+        selected = shutil.which(head, path=search)
+    if not selected:
+        return None
+    resolved = Path(os.path.realpath(selected))
+    if sys.platform == "darwin" and resolved.parent.name == "bin" and re.fullmatch(r"python(?:[0-9]+(?:\.[0-9]+)*)?", resolved.name):
+        version = resolved.parent.parent
+        if version.parent.name == "Versions" and version.parent.parent.suffix == ".framework":
+            bundle = version / "Resources/Python.app/Contents/MacOS/Python"
+            if resolved.is_file() and bundle.is_file():
+                return os.path.realpath(bundle)
+    return str(resolved)
 
 
 def _tailscale_https_exec_command(command: tuple[str, ...]) -> list[str] | None:

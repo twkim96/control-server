@@ -355,3 +355,41 @@ def test_external_signal_identity_rejects_nearby_birth(delta):
     with patch('process_manager.psutil.Process', return_value=proc):
         assert _external_process_alive(99, 100.0) is False
         assert _pid_identity_is_current(RuntimeState(pid=99, create_time=100.0)) is False
+
+
+@pytest.mark.parametrize('mismatch', [None, 'arguments', 'framework_version', 'cwd'])
+def test_framework_python_launcher_identity_requires_same_bundle_args_and_cwd(pm, tmp_path, monkeypatch, mismatch):
+    import process_manager as module
+    from unittest.mock import Mock
+    from process_manager import _service_cmdline_match, _verify_destructive_identity
+    monkeypatch.setattr(module.sys, 'platform', 'darwin')
+    version=tmp_path/'Python3.framework/Versions/3.9'
+    launcher=version/'bin/python3.9'
+    bundle=version/'Resources/Python.app/Contents/MacOS/Python'
+    for p in [launcher,bundle]:
+        p.parent.mkdir(parents=True,exist_ok=True)
+        p.write_text('fixture')
+    venv=tmp_path/'.venv/bin/python'
+    venv.parent.mkdir(parents=True)
+    venv.symlink_to(launcher)
+    service=replace(_make_service(port=12345),cwd=str(tmp_path),command=(str(venv),'-u','app.py'))
+    actual_bundle=bundle
+    if mismatch=='framework_version':
+        actual_bundle=tmp_path/'Python3.framework/Versions/3.10/Resources/Python.app/Contents/MacOS/Python'
+        actual_bundle.parent.mkdir(parents=True)
+        actual_bundle.write_text('fixture')
+    actual=[str(actual_bundle),'-u','other.py' if mismatch=='arguments' else 'app.py']
+    proc=Mock()
+    proc.cmdline.return_value=actual
+    proc.cwd.return_value=str(tmp_path/'other') if mismatch=='cwd' else str(tmp_path)
+    proc.exe.return_value=str(actual_bundle)
+    proc.create_time.return_value=10.0
+    proc.is_running.return_value=True
+    proc.status.return_value=psutil.STATUS_RUNNING
+    monkeypatch.setattr(module.psutil,'Process',lambda _:proc)
+    assert _service_cmdline_match(service,actual) is (mismatch not in {'arguments','framework_version'})
+    if mismatch is None:
+        _verify_destructive_identity(service,12345,10.0)
+    else:
+        with pytest.raises(ProcessError,match='신원이 일치'):
+            _verify_destructive_identity(service,12345,10.0)

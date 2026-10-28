@@ -5,6 +5,17 @@ the 1.5.0 public distribution release onward.
 
 ## [Unreleased]
 
+### Managed acceptance (1.6.3, 2026-10-28)
+
+- applied the framework Python identity and compact Runtime fixes through the managed updater
+- controller activation preserved the PM2 7.1.1 daemon and all six managed service PIDs and health;
+  no inactive managed services started, and private configuration remained unchanged
+- the existing external instance retained its PID and passed identity/health and termination
+  preflight checks without sending signals; the live browser enabled external termination
+- the live Servers page showed numeric restart counts and an unwrapped CPU/RAM/count line
+- focused backend regressions, frontend build/lint and package inspection passed;
+  this records managed deployment, not npm publication or long-term workload acceptance
+
 ### Managed acceptance (2026-10-28)
 
 - applied the reviewed PM2 recovery controller patch as managed 1.6.2, preserving the
@@ -23,6 +34,11 @@ the 1.5.0 public distribution release onward.
 
 
 ### Fixed
+
+- recognize macOS framework Python launchers and their matching bundle executable during
+  external identity and termination checks, retaining exact arguments, cwd and lifetime checks
+- show only the restart count number in Servers and preserve the compact column layout
+  without wrapping the CPU/RAM/count line
 
 - preserve valid automatic-recovery-disabled blocker reasons across controller restarts
 - keep verified engine state after completion-report write failures; retain recovery fencing
