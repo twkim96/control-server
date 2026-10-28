@@ -11,7 +11,7 @@ from app import (
 
 
 def test_app_version_matches_release_metadata() -> None:
-    assert APP_VERSION == "1.6.4"
+    assert APP_VERSION == "1.6.5"
 
 
 def test_app_paths_keep_checkout_defaults() -> None:

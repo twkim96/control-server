@@ -78,6 +78,7 @@ export interface RestartMeta {
 
 export interface RecoveryMeta {
   enabled: boolean;
+  auto_takeover?: boolean;
   failure_threshold: number;
   startup_grace_seconds: number;
   cooldown_seconds: number;
@@ -164,6 +165,8 @@ export interface RuntimeInfo {
   alive: boolean;
   unmanaged: boolean;
   unmanaged_pid: number | null;
+  takeover_supported?: boolean;
+  external_identity?: { pid: number; created_at: number };
   pid: number | null;
   pgid: number | null;
   uptime_seconds: number | null;

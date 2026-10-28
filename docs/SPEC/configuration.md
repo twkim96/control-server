@@ -37,6 +37,10 @@
 [로그](logs.md#선택적-실행-중-회전)에 있습니다. 자동 health 복구와 실행 중 로그 회전은
 기본 비활성입니다. native backend에서 이 PM2 운영 기능이 제공된다고 가정하지 않습니다.
 
+`recovery.auto_takeover`는 기본 false인 외부 인스턴스 PM2 전환 정책입니다. 포트와
+활성 health가 필요하고 헬스 실패 복구 `enabled`와 독립입니다. 기존 PID를 유지하지 않고
+종료·재시작하므로 재개 가능한 작업에만 켭니다. [전환 계약](servers.md#외부-인스턴스의-pm2-관리-전환)을 따릅니다.
+
 ## 경로와 환경
 
 서비스 cwd와 Python Action cwd는 `controller.allowed_path_roots` 안에 있어야 합니다.

@@ -122,6 +122,20 @@ export function SupervisionFields({
             onChange={(value) => onRestartChange({ ...restart, max_memory_restart_mb: value })}
           />
 
+          <div className={classes.sectionTitle}>PM2 장애 복구</div>
+          <label className={classes.checkboxRow}>
+            <input
+              type="checkbox"
+              checked={recovery.auto_takeover ?? false}
+              onChange={(event) => onRecoveryChange({ ...recovery, auto_takeover: event.target.checked })}
+            />
+            PM2 daemon 장애 시 이전 관리 서비스 자동 전환
+          </label>
+          <div className={classes.help}>
+            PM2 daemon 장애 시 남아 있는 이전 관리 프로세스를 종료하고 PM2에서 다시 시작합니다.
+            실행 중인 작업이 중단될 수 있으므로 재개 가능한 작업에만 사용하세요. 포트와 health endpoint가 필요합니다.
+          </div>
+
           <div className={classes.sectionTitle}>헬스 실패 복구</div>
           <label className={classes.checkboxRow}>
             <input

@@ -5,6 +5,29 @@ the 1.5.0 public distribution release onward.
 
 ## [Unreleased]
 
+### Managed acceptance (1.6.5, 2026-10-28)
+
+- applied the external-to-PM2 transition UI/API through the managed updater; the live
+  external-service button and lifetime-bound interruption warning were verified and cancelled
+- all six managed service PIDs and health, the existing external PID, inactive service
+  states and private configuration were preserved; automatic transition remains off by default
+- isolated real PM2 transition verified original-process exit, managed replacement and health;
+  regressions cover stale lifetimes, daemon changes before signaling, cross-language locks,
+  interrupted durable intent and automatic attempt reservation
+- focused backend, frontend build/lint and package inspection passed; independent safety
+  review findings were fixed and rechecked; live external termination and automatic opt-in
+  acceptance were not performed
+
+### Added (1.6.5)
+
+- provide an explicit external-to-PM2 transition with a lifetime-bound confirmation,
+  fresh identity/health checks, durable intent, serialized termination/start and readiness
+- add default-off per-service automatic transition for verified recent PM2 orphans;
+  require prior ownership/running intent and bound destructive attempts per daemon
+- preserve PM2 sole ownership: transitions restart the app, never attach an existing PID
+  or spawn an unmanaged replacement; distinguish termination/start/readiness failures
+
+
 ### Added
 
 - add a Settings PM2 restart button and authenticated, CSRF-protected restart API, using

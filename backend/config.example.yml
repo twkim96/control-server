@@ -25,6 +25,7 @@ controller:
 #     max_memory_restart_mb: 0  # 0 disables memory-triggered restart (root PID)
 #   recovery:
 #     enabled: false
+#     auto_takeover: false  # Only for restart-resumable workloads; replaces recent verified PM2 orphans.
 #     failure_threshold: 3
 #     startup_grace_seconds: 30.0
 #     cooldown_seconds: 300.0

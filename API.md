@@ -79,6 +79,24 @@ curl -sS -b "$COOKIE_JAR" \
 | POST | `/api/auth/logout` | 없음 | 현재 세션 삭제 |
 | GET | `/api/auth/me` | 없음 | 현재 인증 상태와 CSRF 토큰 |
 
+### 외부 인스턴스 PM2 관리 전환 (1.6.5)
+
+`POST /api/services/<sid>/take_over`는 세션+CSRF로 보호합니다. 본문은 상세 GET의
+`runtime.external_identity`에서 받은 `{ "pid": 123, "created_at": 1234567890.123 }`이며
+두 값이 누락·잘못되거나 새 관측과 다르면 신호를 보내지 않습니다. 상세 GET은 검증된
+외부 PID에만 identity를 제공하고 `runtime.takeover_supported`는 PM2 backend 여부입니다.
+
+기존 PID를 종료하고 현재 서비스 정의로 PM2에서 다시 시작합니다. 성공은 HTTP 200과
+`{ok:true,replaced:{pid},service}`이며 health 확인까지 포함합니다. 기존 PM2 항목·신원
+변경·health 실패·의존 조건·관리 작업 충돌은 409입니다. 종료 실패는
+`external_termination_failed`, 종료 후 PM2 시작 실패는 `pm2_start_failed`, 시작 후
+정상 응답 실패는 `readiness_failed`입니다. 실패 응답이 기존 프로세스의 생존을 보장하지
+않으므로 현재 서비스 상태를 다시 조회합니다. 성공한 전환만 PM2 관리 완료로 표시합니다.
+
+서비스 설정 `recovery.auto_takeover`는 기본 false이며 포트·health가 필요합니다.
+[서버 전환 계약](docs/SPEC/servers.md#외부-인스턴스의-pm2-관리-전환)에 따른 최근 PM2
+잔여 프로세스만 자동 전환합니다. 일반 외부 인스턴스의 자동 입양은 지원하지 않습니다.
+
 ### PM2 엔진 관리 (1.5.3)
 
 1.5.3의 기존 로컬·운영 검증 기록은 [CHANGELOG](CHANGELOG.md)에 있고,

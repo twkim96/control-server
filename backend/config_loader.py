@@ -253,6 +253,8 @@ def _parse_service(node: Any, index: int) -> ServiceConfig:
     recovery = _parse_recovery(node.get("recovery"), where)
     if recovery.enabled and not health.enabled:
         raise ConfigError(f"{where}.recovery.enabled는 health.enabled=true일 때만 허용됩니다.")
+    if recovery.auto_takeover and (port is None or not health.enabled):
+        raise ConfigError(f"{where}.recovery.auto_takeover는 port와 health.enabled=true가 필요합니다.")
     group = node.get("group", "")
     if not isinstance(group, str):
         raise ConfigError(f"{where}.group는 문자열이어야 합니다.")
@@ -340,6 +342,7 @@ def _parse_recovery(node: Any, where: str) -> RecoveryConfig:
     if not isinstance(node, dict):
         raise ConfigError(f"{where}.recovery는 mapping이어야 합니다.")
     enabled = _strict_bool(node.get("enabled", False), f"{where}.recovery.enabled")
+    auto_takeover = _strict_bool(node.get("auto_takeover", False), f"{where}.recovery.auto_takeover")
     failure_threshold = _strict_int(
         node.get("failure_threshold", 3), f"{where}.recovery.failure_threshold"
     )
@@ -366,6 +369,7 @@ def _parse_recovery(node: Any, where: str) -> RecoveryConfig:
         startup_grace,
         cooldown,
         restarts_per_hour,
+        auto_takeover,
     )
 
 

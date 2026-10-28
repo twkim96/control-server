@@ -208,6 +208,7 @@ def test_service_meta_contains_exact_supervision_and_log_fields(tmp_path: Path) 
         "startup_grace_seconds": 45.0,
         "cooldown_seconds": 600.0,
         "max_restarts_per_hour": 2,
+        "auto_takeover": False,
     }
     assert meta["group"] == "backend"
     assert meta["depends_on"] == ["database"]
@@ -252,3 +253,26 @@ def test_operational_name_and_budget_bounds(tmp_path, update):
     payload = {"id": "one", "name": "One", "cwd": str(tmp_path), "entry_file": "s.py", "command": ["python", "s.py"], **update}
     with pytest.raises(ConfigError):
         _parse_service(payload, 0)
+
+
+@pytest.mark.parametrize('value',['true',1,None])
+def test_auto_takeover_requires_explicit_boolean(tmp_path,value):
+    with pytest.raises(ConfigError,match='auto_takeover.*boolean'):
+        _load_services(tmp_path,[_service(recovery={'auto_takeover':value})])
+
+
+def test_auto_takeover_default_off_and_roundtrips_independently_of_health_recovery(tmp_path):
+    assert _load_services(tmp_path,[_service()]).services[0].recovery.auto_takeover is False
+    svc=_service(port=12345,health={'enabled':True,'type':'tcp','url':'127.0.0.1:12345'},recovery={'auto_takeover':True})
+    cfg=_load_services(tmp_path,[svc]);assert cfg.services[0].recovery.auto_takeover is True
+    assert cfg.services[0].recovery.enabled is False
+    meta=ServiceRegistry(cfg).service_to_meta(cfg.services[0])
+    assert meta['recovery']['auto_takeover'] is True
+    path=tmp_path/'config.yml';upsert_service(path,meta)
+    assert load_config(path).services[0].recovery.auto_takeover is True
+
+
+@pytest.mark.parametrize('updates',[{}, {'port':12345}, {'health':{'enabled':True,'type':'http','url':'http://127.0.0.1/health'}}])
+def test_auto_takeover_requires_health_and_port(tmp_path,updates):
+    with pytest.raises(ConfigError,match='auto_takeover'):
+        _load_services(tmp_path,[_service(recovery={'auto_takeover':True},**updates)])

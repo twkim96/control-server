@@ -24,6 +24,7 @@ import psutil
 
 from config_loader import ServiceConfig, StopStrategy
 from log_manager import LogManager
+from file_lock import managed_lock
 from process_manager import AdoptEvaluation, ProcessError, ProcessManager, RuntimeState
 from process_manager import _service_cmdline_match
 from net_utils import find_port_holder
@@ -147,6 +148,16 @@ class Pm2Manager:
     @contextmanager
     def service_operation(self, service_id: str):
         with self._op_lock(service_id):
+            yield
+
+    @contextmanager
+    def external_takeover_operation(self):
+        # Keep app update/uninstall and engine kill/resurrect out of the entire
+        # external-kill -> managed-start gap. Ordinary wrappers keep their lock.
+        with managed_lock(self._runtime_root.parent.parent):
+            root = self._runtime_root.parent / "pm2-engine"
+            if (root / "maintenance-owner").exists() or (root / "recovery.json").exists():
+                raise Pm2Error("engine_maintenance_or_recovery_required")
             yield
 
     def activate_service(self, service: ServiceConfig) -> None:
@@ -896,7 +907,14 @@ class Pm2Manager:
     def kill_external(self, service: ServiceConfig, **kwargs):
         if self._external_helper is None:
             raise Pm2Error("external process helper is not configured")
+        expected_daemon = kwargs.pop("expected_daemon_id", None)
+
+        def confirm_daemon():
+            if expected_daemon is not None and self._verified_daemon_identity(expected_daemon) != expected_daemon:
+                raise Pm2Error("PM2 daemon changed; external termination refused")
+
         snapshot = self.snapshot(force=True)
+        confirm_daemon()
         managed = snapshot.get(service.id)
         if managed is not None and managed.alive:
             raise Pm2Error(
@@ -908,6 +926,7 @@ class Pm2Manager:
                 f"{service.id}: 외부 종료 안전 검증 실패 ({evaluation.diagnostics.reason})"
             )
         snapshot = self.snapshot(force=True)
+        confirm_daemon()
         forbidden = {p.pid for p in snapshot.values() if p.pid is not None}
         forbidden.update(kwargs.pop("forbidden_pids", ()) or ())
         if evaluation.candidate.pid in forbidden:
@@ -921,6 +940,7 @@ class Pm2Manager:
             service,
             evaluation=evaluation,
             forbidden_pids=forbidden,
+            before_signal=confirm_daemon if expected_daemon is not None else None,
             **kwargs,
         )
 

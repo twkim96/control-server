@@ -19,12 +19,16 @@ import tempfile
 import threading
 import time
 import uuid
+import psutil
 
 from routes.config_api import _config_reconcile_lock
 
 
 _log = logging.getLogger("server_control.operations")
 _MESSAGES = {
+    "external_takeover_requested": "External instance replacement requested; its work may be interrupted.",
+    "external_takeover_succeeded": "External instance replaced by a healthy PM2 managed process.",
+    "external_takeover_failed": "External instance replacement failed; inspect current service state.",
     "start": "Service start requested successfully.",
     "stop": "Service stop requested successfully.",
     "restart": "Service restart requested successfully.",
@@ -43,12 +47,16 @@ _DAEMON_RESTORE_REASONS = frozenset({
     "definition_changed", "existing_pm2_entry", "previous_process_unconfirmed",
     "external_port_occupied", "dependency_not_ready", "dependency_missing",
     "pm2_start_failed", "readiness_failed", "automatic_recovery_disabled",
+    "external_takeover_not_allowed",
 })
 
 
 def _definition_id(service):
     # Bind intent to its exact definition without persisting commands or secrets.
-    return hashlib.sha256(json.dumps(asdict(service), sort_keys=True,
+    definition = asdict(service)
+    # This opt-in changes recovery policy, not the bound launch definition.
+    definition["recovery"].pop("auto_takeover", None)
+    return hashlib.sha256(json.dumps(definition, sort_keys=True,
                                     separators=(",", ":")).encode()).hexdigest()
 
 
@@ -304,7 +312,7 @@ class ServiceOperations:
             except OSError:
                 _log.warning("Service action succeeded but history persistence failed (details withheld)")
 
-    def prepare_intent(self, service, action):
+    def prepare_intent(self, service, action, *, automatic_reservation=False):
         """Write intent before signaling/spawning; failed writes forbid mutation."""
         with self._lock:
             if self._state_error:
@@ -317,8 +325,11 @@ class ServiceOperations:
             entry.pop("daemon_restore_reason", None)
             entry.pop("startup_blocked_reason", None)
             self._failures.pop(service.id, None)
-            entry["daemon_restore_attempts"] = 0
-            entry.pop("daemon_restore_at", None)
+            entry["daemon_restore_attempts"] = 3 if automatic_reservation else 0
+            if automatic_reservation:
+                entry["daemon_restore_at"] = self.clock()
+            else:
+                entry.pop("daemon_restore_at", None)
             try:
                 self._persist()
             except OSError as exc:
@@ -333,6 +344,111 @@ class ServiceOperations:
             self.prepare_intent(service, "stop")
             self._event(service.id, "stop")
             self._persist()
+
+    def take_over_external(self, service, *, pid, created_at, automatic=False, daemon_id=None):
+        """Replace one confirmed external lifetime; PM2 stays the sole supervisor.
+
+        Persist stopped intent before killing, then running intent before spawn.
+        A failure is visible and never falls back to an unmanaged spawn.
+        """
+        if type(pid) is not int or pid <= 0 or not _number(created_at) or created_at <= 0:
+            raise OperationsError("external_identity_required")
+        with self._mutation(service):
+            try:
+                with self.pm.external_takeover_operation():
+                    return self._take_over_external_locked(service, pid, created_at,
+                                                          automatic=automatic, daemon_id=daemon_id)
+            except OSError as exc:
+                raise OperationsError("managed_operation_busy") from exc
+
+    def _take_over_external_locked(self, service, pid, created_at, *, automatic, daemon_id):
+        sid = service.id
+        if not service.health.enabled or service.port is None:
+            raise OperationsError("takeover_requires_health_and_port")
+        if not any(a.type == "process_start" and a.enabled for a in service.actions):
+            raise OperationsError("start_action_disabled")
+        self._dependencies_ready(service)
+        self.check_stop_allowed(service)
+        current = self.pm.get_process(sid, force=True)
+        captured_daemon = self.pm.daemon_identity()
+        if captured_daemon is None:
+            raise OperationsError("daemon_identity_unavailable")
+        if current is not None:
+            # Do not repurpose a stopped/errored entry or race a managed start.
+            raise OperationsError("existing_pm2_entry")
+        observed = self.health.check(service, include_port_check=False, force_health_probe=True)
+        evaluation = self.pm.evaluate_external_identity(service)
+        candidate = evaluation.candidate
+        if (observed.state != "running_external" or not evaluation.diagnostics.ok or candidate is None
+                or candidate.pid != pid or candidate.create_time is None
+                or abs(candidate.create_time - created_at) >= 1e-6):
+            raise OperationsError("external_identity_changed")
+        try:
+            if psutil.Process(pid).uids().real != os.getuid():
+                raise OperationsError("external_identity_changed")
+        except (psutil.Error, OSError) as exc:
+            raise OperationsError("external_identity_changed") from exc
+        from process_manager import _verify_destructive_identity
+        _verify_destructive_identity(service, pid, created_at)
+        # Validate the full launch manifest (cwd/interpreter/env) before downtime.
+        self.pm.build_manifest(service)
+        if automatic:
+            self._authorize_automatic_takeover(service, candidate, daemon_id)
+        if self.pm.daemon_identity() != captured_daemon:
+            raise OperationsError("daemon_identity_unavailable")
+        self.prepare_intent(service, "stop", automatic_reservation=automatic)
+        with self._lock:
+            self._event(sid, "external_takeover_requested")
+            self._persist()
+        phase = "external_termination_failed"
+        try:
+            killed = self.pm.kill_external(service, expected_pid=pid, expected_create_time=created_at,
+                                           expected_daemon_id=captured_daemon)
+            phase = "pm2_start_failed"
+            self.pm.snapshot(force=True)
+            if self.pm.daemon_identity() != captured_daemon:
+                raise OperationsError("daemon_identity_unavailable")
+            # Kill helper proves exit/port release; start rechecks occupancy again.
+            self.prepare_intent(service, "start", automatic_reservation=automatic)
+            self.pm.start(service)
+            self.record_action(sid, "start", explicit=not automatic)
+            phase = "readiness_failed"
+            self._wait_ready(service)
+        except Exception as exc:
+            with self._lock:
+                self._event(sid, "external_takeover_failed")
+                self._persist()
+            raise OperationsError(phase) from exc
+        with self._lock:
+            self._event(sid, "external_takeover_succeeded")
+            self._persist()
+        return killed
+
+    def _authorize_automatic_takeover(self, service, candidate, daemon_id):
+        """Only an opted-in, recently orphaned previously owned service may die."""
+        if not self._automatic_enabled or not service.recovery.auto_takeover:
+            raise OperationsError("external_takeover_not_allowed")
+        with self._lock:
+            entry = self._entry(service.id)
+            if (entry.get("desired_state") != "running"
+                    or entry.get("definition_id") != _definition_id(service)
+                    or entry.get("daemon_restore_status") not in {"pending", "blocked", "restoring"}
+                    or entry.get("daemon_restore_attempts", 0) != 0
+                    or not entry.get("owned_pid") or not entry.get("owned_created_at")):
+                raise OperationsError("external_takeover_not_allowed")
+            if self.pm.daemon_identity() != daemon_id:
+                raise OperationsError("external_takeover_not_allowed")
+            try:
+                boot = float(daemon_id.split(":", 1)[1])
+            except (ValueError, TypeError, AttributeError):
+                raise OperationsError("external_takeover_not_allowed")
+            # A new PID must have been born during the shutdown preceding this
+            # boot. An exact old owned lifetime may also survive the shutdown.
+            exact_owned = candidate.pid == entry["owned_pid"] and abs(candidate.create_time - entry["owned_created_at"]) < 1e-6
+            born_during_exit = boot - 30 <= candidate.create_time <= boot
+            if (not 0 <= self.clock() - boot <= 300 or not (exact_owned or born_during_exit)
+                    or candidate.create_time < entry["owned_created_at"]):
+                raise OperationsError("external_takeover_not_allowed")
 
     def _maintenance(self):
         root = self.runtime / "pm2-engine"
@@ -743,6 +859,22 @@ class ServiceOperations:
                 return
             try:
                 self._dependencies_ready(service)
+                if fresh is None and service.recovery.auto_takeover:
+                    from net_utils import find_port_holder
+                    holder = find_port_holder(service.port) if service.port is not None else None
+                    if holder is not None:
+                        evaluation = self.pm.evaluate_external_identity(service)
+                        if not evaluation.diagnostics.ok or evaluation.candidate is None:
+                            raise OperationsError("external_takeover_not_allowed")
+                        candidate = evaluation.candidate
+                        self.take_over_external(service, pid=candidate.pid,
+                                                created_at=candidate.create_time,
+                                                automatic=True, daemon_id=daemon_id)
+                        with self._lock:
+                            entry["daemon_restore_status"] = "restored"
+                            entry.pop("daemon_restore_reason", None)
+                            self._persist()
+                        return
                 if fresh is None:
                     if (entry.get("daemon_restore_attempts", 0) >= 3
                             or self.clock() - entry.get("daemon_restore_at", 0) < 60):

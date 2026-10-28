@@ -85,6 +85,7 @@ const DEFAULT_RESTART: RestartMeta = {
 
 const DEFAULT_RECOVERY: RecoveryMeta = {
   enabled: false,
+  auto_takeover: false,
   failure_threshold: 3,
   startup_grace_seconds: 30,
   cooldown_seconds: 300,
@@ -404,6 +405,8 @@ function validate(
     return "시간당 최대 재시작 횟수는 100 이하여야 합니다.";
   if (recovery.enabled && !basic.health_enabled)
     return "헬스 복구를 사용하려면 health endpoint를 켜야 합니다.";
+  if (recovery.auto_takeover && (!basic.port.trim() || !basic.health_enabled))
+    return "PM2 장애 시 자동 전환을 사용하려면 포트와 health endpoint가 필요합니다.";
   return undefined;
 }
 

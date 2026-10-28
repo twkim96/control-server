@@ -1034,6 +1034,8 @@ class ProcessManager:
         service: ServiceConfig,
         *,
         expected_pid: int | None = None,
+        expected_create_time: float | None = None,
+        before_signal=None,
         forbidden_pids: set[int] | None = None,
         poll_interval: float = 0.2,
         evaluation: AdoptEvaluation | None = None,
@@ -1064,12 +1066,16 @@ class ProcessManager:
                 raise ProcessError(_external_kill_rejection_message(service, diagnostics.reason))
             if expected_pid is not None and diagnostics.candidate_pid != expected_pid:
                 raise ProcessError("외부 종료 대상이 health 확인 뒤 변경되었습니다. 다시 확인하세요.")
+            if expected_create_time is not None and (evaluation.candidate.create_time is None
+                    or abs(evaluation.candidate.create_time - expected_create_time) >= 1e-6):
+                raise ProcessError("외부 프로세스의 생성 시각이 변경되었습니다. 다시 확인하세요.")
             return self._kill_external_locked(
                 service,
                 expected_pid=evaluation.candidate.pid,
                 expected_create_time=evaluation.candidate.create_time,
                 forbidden_pids=forbidden_pids,
                 poll_interval=poll_interval,
+                before_signal=before_signal,
             )
 
     def _kill_external_locked(
@@ -1080,6 +1086,7 @@ class ProcessManager:
         expected_create_time: float | None,
         forbidden_pids: set[int] | None,
         poll_interval: float,
+        before_signal=None,
     ) -> dict[str, Any]:
         assert service.port is not None
         holder = _find_port_holder(service.port)
@@ -1141,6 +1148,8 @@ class ProcessManager:
                     break
             if holds_port:
                 try:
+                    if before_signal is not None:
+                        before_signal()
                     os.kill(target_pid, sig)
                     last_signal = sig.name
                 except ProcessLookupError:

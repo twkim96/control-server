@@ -78,6 +78,16 @@ export function killExternal(serviceId: string): Promise<KillExternalResponse> {
   );
 }
 
+export function takeOverExternal(
+  serviceId: string,
+  identity: { pid: number; created_at: number },
+): Promise<{ ok: true; replaced: { pid: number }; service: ServiceMeta }> {
+  return apiFetch(`/api/services/${encodeURIComponent(serviceId)}/take_over`, {
+    method: "POST",
+    body: JSON.stringify(identity),
+  });
+}
+
 export function tailLogs(
   serviceId: string,
   options: { tail?: number; sinceOffset?: number } = {},

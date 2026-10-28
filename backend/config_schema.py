@@ -78,6 +78,7 @@ class RecoveryConfig:
     startup_grace_seconds: float = 30.0
     cooldown_seconds: float = 300.0
     max_restarts_per_hour: int = 3
+    auto_takeover: bool = False
 
 
 @dataclass(frozen=True)

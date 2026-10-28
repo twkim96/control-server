@@ -4,7 +4,7 @@ import { Button } from "../../components/Button";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { useToast } from "../../components/useToast";
 import { useAction } from "../../hooks/useAction";
-import { cancelRecovery, getService, getServiceEvents, killExternal } from "../../api/services";
+import { cancelRecovery, getService, getServiceEvents, killExternal, takeOverExternal } from "../../api/services";
 import type { ActionMeta, ActionType, AdoptDiagnostics, ServiceEventsResponse, ServiceMeta } from "../../types/service";
 import { describeError } from "../../utils/errors";
 import {
@@ -53,6 +53,9 @@ const EVENT_LABELS: Record<string, string> = {
   daemon_restore_succeeded: "PM2 복구 완료",
   daemon_restore_blocked: "PM2 복구 차단",
   daemon_restore_failed: "PM2 복구 실패",
+  external_takeover_requested: "외부 프로세스 PM2 전환 요청",
+  external_takeover_succeeded: "외부 프로세스 PM2 전환 완료",
+  external_takeover_failed: "외부 프로세스 PM2 전환 실패",
 };
 
 const RECOVERY_STATUS: Record<string, string> = {
@@ -64,6 +67,7 @@ const RECOVERY_REASON: Record<string, string> = {
   existing_pm2_entry: "기존 PM2 항목의 상태를 확인하세요.",
   previous_process_unconfirmed: "이전 프로세스의 종료를 확인하지 못했습니다.",
   external_port_occupied: "외부 프로세스가 포트를 사용 중입니다.",
+  external_takeover_not_allowed: "외부 프로세스의 자동 전환이 허용되지 않았습니다.",
   dependency_not_ready: "선행 서비스가 준비되지 않았습니다.",
   dependency_missing: "선행 서비스를 찾을 수 없습니다.",
   pm2_start_failed: "PM2 시작에 실패했습니다.",
@@ -81,6 +85,8 @@ export function ServerRowDetails({ service, onMutated, onOpenLogs }: ServerRowDe
   const [confirm, setConfirm] = useState<ActionMeta | undefined>();
   const [killOpen, setKillOpen] = useState(false);
   const [killing, setKilling] = useState(false);
+  const [takeoverBusy, setTakeoverBusy] = useState(false);
+  const [takeoverIdentity, setTakeoverIdentity] = useState<{ pid: number; created_at: number }>();
   const [cancellingRecovery, setCancellingRecovery] = useState(false);
   const [events, setEvents] = useState<ServiceEventsResponse>();
   const [eventsError, setEventsError] = useState<string>();
@@ -90,6 +96,24 @@ export function ServerRowDetails({ service, onMutated, onOpenLogs }: ServerRowDe
   const canKillExternal = service.runtime?.state === "running_external";
   const externalPid = service.runtime?.unmanaged_pid ?? null;
   const recovery = service.runtime?.daemon_recovery;
+
+  const openTakeover = async () => {
+    setTakeoverBusy(true);
+    try {
+      const fresh = await getService(service.id);
+      const identity = fresh.runtime?.external_identity;
+      if (!fresh.runtime?.takeover_supported || fresh.runtime.state !== "running_external" || !identity ||
+          !Number.isFinite(identity.pid) || !Number.isFinite(identity.created_at)) {
+        throw new Error("전환할 외부 프로세스의 신원을 확인할 수 없습니다. 상태를 다시 확인하세요.");
+      }
+      setTakeoverIdentity({ ...identity });
+    } catch (err) {
+      toast.push(`PM2 전환 준비 실패: ${describeError(err)}`, "error");
+      onMutated();
+    } finally {
+      setTakeoverBusy(false);
+    }
+  };
 
   const refreshEvents = useCallback(async () => {
     setEventsLoading(true);
@@ -179,11 +203,22 @@ export function ServerRowDetails({ service, onMutated, onOpenLogs }: ServerRowDe
               size="sm"
               variant="danger"
               onClick={() => setKillOpen(true)}
-              disabled={killing || !canKillExternal}
+              disabled={killing || takeoverBusy || !!takeoverIdentity || !canKillExternal}
               loading={killing}
             >
               외부 인스턴스 종료
             </Button>
+            {service.runtime?.takeover_supported && (
+              <Button
+                size="sm"
+                variant="danger"
+                onClick={() => void openTakeover()}
+                disabled={killing || killOpen || takeoverBusy || !!takeoverIdentity || !canKillExternal}
+                loading={takeoverBusy}
+              >
+                PM2 관리로 전환
+              </Button>
+            )}
           </div>
         )}
         {isExternal && (
@@ -420,6 +455,30 @@ export function ServerRowDetails({ service, onMutated, onOpenLogs }: ServerRowDe
           }}
         />
       )}
+
+      <ConfirmDialog
+        open={!!takeoverIdentity}
+        title={`${service.name} PM2 관리로 전환`}
+        message={`외부 프로세스 (PID ${takeoverIdentity?.pid ?? "—"})를 종료하고 PM2 관리로 다시 시작합니다. 실행 중인 작업이 중단될 수 있습니다. 전환하시겠습니까?`}
+        confirmLabel="종료 후 전환"
+        variant="danger"
+        loading={takeoverBusy}
+        onCancel={() => setTakeoverIdentity(undefined)}
+        onConfirm={async () => {
+          if (!takeoverIdentity || takeoverBusy || killing) return;
+          setTakeoverBusy(true);
+          try {
+            const result = await takeOverExternal(service.id, takeoverIdentity);
+            toast.push(`PM2 관리로 전환했습니다 (기존 PID ${result.replaced.pid}).`, "success");
+          } catch (err) {
+            toast.push(`PM2 전환 실패: ${describeError(err)}. 현재 관리 상태를 확인하세요.`, "error");
+          } finally {
+            setTakeoverIdentity(undefined);
+            onMutated();
+            setTakeoverBusy(false);
+          }
+        }}
+      />
 
       <ExternalKillDialog
         open={killOpen}

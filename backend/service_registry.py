@@ -174,6 +174,7 @@ class ServiceRegistry:
                 "startup_grace_seconds": service.recovery.startup_grace_seconds,
                 "cooldown_seconds": service.recovery.cooldown_seconds,
                 "max_restarts_per_hour": service.recovery.max_restarts_per_hour,
+                "auto_takeover": service.recovery.auto_takeover,
             },
             "log": {
                 "enabled": service.log.enabled,

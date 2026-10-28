@@ -67,7 +67,7 @@ export function ExternalKillDialog({
         <div className={classes.modalHeader}>외부 인스턴스 종료</div>
         <div className={classes.modalBody}>
           <p className={classes.modalParagraph}>
-            <strong>{serviceName}</strong>은(는) 컨트롤 서버가 띄우지 않은
+            <strong>{serviceName}</strong>은(는) 현재 관리 목록 밖에서 실행 중인
             외부 프로세스입니다. 정말 종료할까요?
           </p>
 

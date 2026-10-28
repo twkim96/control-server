@@ -112,6 +112,12 @@ def _build_service_payload(
             evaluation = result.adoption_evaluation
             if evaluation is not None:
                 payload["runtime"]["adopt_diagnostics"] = evaluation.diagnostics.to_dict()
+                if evaluation.diagnostics.ok and evaluation.candidate is not None:
+                    payload["runtime"]["external_identity"] = {
+                        "pid": evaluation.candidate.pid,
+                        "created_at": evaluation.candidate.create_time,
+                    }
+        payload["runtime"]["takeover_supported"] = current_app.config.get("process_backend") == "pm2"
     return payload
 
 
@@ -368,6 +374,45 @@ def _kill_external_locked(sid: str):
             "service": _build_service_payload(service),
         }
     )
+
+
+@bp.post("/services/<sid>/take_over")
+@auth_required
+@csrf_required
+def take_over(sid):
+    from routes.config_api import _config_reconcile_lock
+    with _config_reconcile_lock:
+        try:
+            service = _registry().get(sid)
+        except ServiceNotFoundError:
+            return jsonify({"error": "service_not_found", "id": sid}), 404
+        operations = current_app.config.get("service_operations")
+        if current_app.config.get("process_backend") != "pm2" or operations is None:
+            return jsonify({"error": "pm2_required"}), 409
+        body = request.get_json(silent=True)
+        if not isinstance(body, dict):
+            return jsonify({"error": "external_identity_required"}), 400
+        try:
+            killed = operations.take_over_external(service, pid=body.get("pid"),
+                                                   created_at=body.get("created_at"))
+        except OperationsError as exc:
+            return jsonify({"error": str(exc), "message": _takeover_error_message(str(exc))}), 409
+        except ProcessError:
+            return jsonify({"error": "takeover_failed", "message": "외부 인스턴스 전환에 실패했습니다. 현재 상태를 확인하세요."}), 409
+        return jsonify({"ok": True, "replaced": {"pid": killed["pid"]},
+                        "service": _build_service_payload(service)})
+
+
+def _takeover_error_message(code):
+    return {
+        "external_identity_changed": "외부 프로세스가 변경됐거나 신원을 확인할 수 없습니다. 다시 확인하세요.",
+        "external_identity_required": "확인한 외부 PID와 생성 시각이 필요합니다.",
+        "existing_pm2_entry": "PM2 관리 항목이 있습니다. 현재 상태를 확인하세요.",
+        "external_termination_failed": "외부 인스턴스 종료를 확인하지 못해 PM2 시작을 중단했습니다.",
+        "pm2_start_failed": "외부 종료 후 PM2 시작에 실패했습니다. 현재 상태와 로그를 확인하세요.",
+        "readiness_failed": "PM2로 시작했지만 정상 응답을 확인하지 못했습니다. 현재 상태와 로그를 확인하세요.",
+        "managed_operation_busy": "다른 설치 또는 엔진 작업이 진행 중입니다. 잠시 후 다시 시도하세요.",
+    }.get(code, "관리 전환을 진행할 수 없습니다. 상태와 설정을 확인하세요.")
 
 
 @bp.post("/services/<sid>/cancel_recovery")
