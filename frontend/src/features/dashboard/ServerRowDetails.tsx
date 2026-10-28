@@ -235,30 +235,6 @@ export function ServerRowDetails({ service, onMutated, onOpenLogs }: ServerRowDe
           </div>
         )}
         <div className={classes.detailsActions}>
-          {recovery && (recovery.desired_state === "running" || isExternal) && (
-            <>
-              <Button
-                size="sm"
-                loading={cancellingRecovery}
-                disabled={cancellingRecovery}
-                onClick={async () => {
-                  setCancellingRecovery(true);
-                  try {
-                    await cancelRecovery(service.id);
-                    toast.push("자동 복구를 취소했습니다.", "success");
-                    onMutated();
-                  } catch (err) {
-                    toast.push(`자동 복구 취소 실패: ${describeError(err)}`, "error");
-                  } finally {
-                    setCancellingRecovery(false);
-                  }
-                }}
-              >
-                자동 복구 취소
-              </Button>
-              <span className={classes.detailValueMuted}>실행 중인 프로세스는 종료하지 않습니다.</span>
-            </>
-          )}
           {primaryActions.map((action) => {
             const isStart = action.type === "process_start";
             const isPrimary = isStart;
@@ -315,6 +291,27 @@ export function ServerRowDetails({ service, onMutated, onOpenLogs }: ServerRowDe
               onClick={() => handleAction(stopAction)}
             >
               {stopAction.label}
+            </Button>
+          )}
+          {recovery && (recovery.desired_state === "running" || isExternal) && (
+            <Button
+              size="sm"
+              loading={cancellingRecovery}
+              disabled={cancellingRecovery}
+              onClick={async () => {
+                setCancellingRecovery(true);
+                try {
+                  await cancelRecovery(service.id);
+                  toast.push("자동 복구를 취소했습니다.", "success");
+                  onMutated();
+                } catch (err) {
+                  toast.push(`자동 복구 취소 실패: ${describeError(err)}`, "error");
+                } finally {
+                  setCancellingRecovery(false);
+                }
+              }}
+            >
+              자동 복구 취소
             </Button>
           )}
         </div>
