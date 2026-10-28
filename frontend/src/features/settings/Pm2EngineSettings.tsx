@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   checkPm2EngineUpdate,
   getPm2EngineStatus,
+  restartPm2Engine,
   updatePm2Engine,
   type Pm2EngineStatus,
 } from "../../api/system";
@@ -13,7 +14,7 @@ import classes from "./settings.module.css";
 
 export function Pm2EngineSettings() {
   const [status, setStatus] = useState<Pm2EngineStatus>();
-  const [action, setAction] = useState<"check" | "update" | null>("check");
+  const [action, setAction] = useState<"check" | "update" | "restart" | null>("check");
   const [actionError, setActionError] = useState<string>();
   const mounted = useRef(false);
   const checked = useRef(false);
@@ -51,11 +52,13 @@ export function Pm2EngineSettings() {
       });
   }, [request]);
 
-  async function runAction(nextAction: "check" | "update") {
+  async function runAction(nextAction: "check" | "update" | "restart") {
     setAction(nextAction);
     setActionError(undefined);
     try {
-      await request(nextAction === "check" ? checkPm2EngineUpdate : updatePm2Engine);
+      const fetcher = nextAction === "check" ? checkPm2EngineUpdate
+        : nextAction === "restart" ? restartPm2Engine : updatePm2Engine;
+      await request(fetcher);
     } catch (err) {
       if (mounted.current) setActionError(describeError(err));
     } finally {
@@ -68,6 +71,8 @@ export function Pm2EngineSettings() {
 
   const job = status?.job;
   const running = job?.status === "running";
+  const restarting = job?.operation === "restart";
+  const jobLabel = restarting ? "재시작" : "업데이트";
   const busy = action !== null || running;
   const mismatch = status?.current_version && status.daemon_version &&
     status.current_version !== status.daemon_version;
@@ -78,7 +83,7 @@ export function Pm2EngineSettings() {
       <header className={classes.sectionHeader}>
         <div>
           <h2 className={classes.sectionTitle}>PM2 엔진</h2>
-          <p className={classes.sectionSub}>서비스 관리 엔진의 버전을 확인하고 업데이트합니다.</p>
+          <p className={classes.sectionSub}>서비스 관리 엔진을 재시작하거나 업데이트합니다.</p>
         </div>
       </header>
       <div className={`${classes.panel} ${classes.pm2Panel}`}>
@@ -93,18 +98,19 @@ export function Pm2EngineSettings() {
         {status?.supported && status.latest_version && !status.update_available && !running && <p className={classes.colorDescription}>최신 버전을 사용 중입니다.</p>}
         {job && (
           <div className={classes.pm2Job} role="status" aria-live="polite" data-phase={job.phase}>
-            <strong>{running ? "업데이트 진행 중" : job.status === "succeeded" ? "업데이트 완료" : "업데이트 실패"}</strong>
+            <strong>{jobLabel} {running ? "진행 중" : job.status === "succeeded" ? "완료" : "실패"}</strong>
             <p>{job.message}</p>
             {job.error && <p>{job.error}</p>}
-            {job.rolled_back && <p>이전 버전으로 복구했습니다.</p>}
+            {job.rolled_back && <p>이전 엔진과 서비스 상태로 복구했습니다.</p>}
           </div>
         )}
         {failure && <p className={classes.pm2Error} role="alert">{failure}</p>}
         <div className={classes.pm2Buttons}>
           <Button variant="ghost" onClick={() => void runAction("check")} disabled={busy || status?.supported === false} loading={action === "check"}>최신 버전 확인</Button>
-          <Button variant="primary" onClick={() => void runAction("update")} disabled={busy || !status?.supported || !status.update_available} loading={action === "update" || running}>{running ? "업데이트 중" : "업데이트"}</Button>
+          <Button onClick={() => void runAction("restart")} disabled={busy || !status?.supported} loading={action === "restart" || (running && restarting)}>{running && restarting ? "재시작 중" : "PM2 재시작"}</Button>
+          <Button variant="primary" onClick={() => void runAction("update")} disabled={busy || !status?.supported || !status.update_available} loading={action === "update" || (running && !restarting)}>{running && !restarting ? "업데이트 중" : "업데이트 및 재시작"}</Button>
         </div>
-        <p className={classes.colorDescription}>업데이트 중 관리 서비스가 잠시 재시작될 수 있습니다.</p>
+        <p className={classes.colorDescription}>PM2 재시작과 업데이트는 실행 중인 관리 서비스를 함께 재시작합니다. 중지된 서비스는 유지합니다.</p>
       </div>
     </section>
   );

@@ -33,6 +33,7 @@ export interface Pm2EngineStatus {
   checked_at: string | null;
   job: null | {
     id: string;
+    operation?: "update" | "restart";
     status: "running" | "succeeded" | "failed";
     phase: string;
     message: string;
@@ -55,4 +56,8 @@ export function checkPm2EngineUpdate(): Promise<Pm2EngineStatus> {
 
 export function updatePm2Engine(): Promise<Pm2EngineStatus> {
   return apiFetch<Pm2EngineStatus>("/api/system/pm2/update", { method: "POST" });
+}
+
+export function restartPm2Engine(): Promise<Pm2EngineStatus> {
+  return apiFetch<Pm2EngineStatus>("/api/system/pm2/restart", { method: "POST" });
 }

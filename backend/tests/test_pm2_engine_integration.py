@@ -96,16 +96,18 @@ def test_real_engine_upgrade_preserves_service_states_and_is_idempotent(monkeypa
         shutil.rmtree(root)
 
 
-@pytest.mark.parametrize("scenario", ["upgrade", "forced-rollback", "interrupted-empty", "interrupted-online"])
+@pytest.mark.parametrize("scenario", ["upgrade", "forced-rollback", "interrupted-empty", "interrupted-online", "restart", "restart-rollback"])
 def test_real_engine_never_executes_inactive_apps(scenario):
-    rollback = scenario != "upgrade"
+    rollback = scenario not in {"upgrade", "restart"}
     """Count launches throughout cutover, not just final stopped/errored status."""
     repo = Path(__file__).resolve().parents[2]
     previous = Path(os.environ.get("CONTROL_TEST_PM2_PREVIOUS_CLI", repo / "ops/pm2/node_modules/pm2/bin/pm2")).resolve()
     candidate = Path(os.environ.get("CONTROL_TEST_PM2_CANDIDATE_CLI", repo / "ops/pm2/node_modules/pm2/bin/pm2")).resolve()
+    if scenario.startswith("restart"):
+        candidate = previous
     previous_version = json.loads((previous.parents[1] / "package.json").read_text())["version"]
     target_version = json.loads((candidate.parents[1] / "package.json").read_text())["version"]
-    if previous_version == target_version:
+    if previous_version == target_version and not scenario.startswith("restart"):
         pytest.skip("supply distinct installed CONTROL_TEST_PM2_PREVIOUS_CLI and CONTROL_TEST_PM2_CANDIDATE_CLI")
     node = shutil.which("node")
     assert node
@@ -166,6 +168,7 @@ def test_real_engine_never_executes_inactive_apps(scenario):
                     time.sleep(0.05)
                 assert counts()["stopped"] == 2
         baseline = counts()
+        daemon_before = int((runtime / "pm2/pm2.pid").read_text())
         # Reuse installed packages, with an injected post-cutover health failure
         # for rollback. Every PM2 operation itself uses the real daemon and CLI.
         driver = root / "update.mjs"
@@ -180,14 +183,15 @@ if(scenario.startsWith("interrupted")){
     previous_target:null,dump:backup,health_targets:[]
   }));
 }
-const {updateEngine,runCaptured,packageVersion} = await import(modulePath);
-let candidateActive=false;
-const result=await updateEngine({runtimeDir,appRoot,configPath:'unused',hooks:{
+const {updateEngine,restartEngine,runCaptured,packageVersion} = await import(modulePath);
+let candidateActive=false,resurrects=0;
+const operate=scenario.startsWith("restart")?restartEngine:updateEngine;
+const result=await operate({runtimeDir,appRoot,configPath:'unused',hooks:{
   latest:async()=>target,
   install:async(prefix)=>{await fs.mkdir(path.join(prefix,'node_modules'),{recursive:true});
     await fs.symlink(path.resolve(candidate,'../..'),path.join(prefix,'node_modules/pm2'));},
   execute:async(command,args,options)=>{const output=await runCaptured(command,args,options);
-    if(args[0]==='resurrect')candidateActive=packageVersion(options.env.CONTROL_PM2_ENGINE_CLI)===target;
+    if(args[0]==='resurrect'){resurrects++;candidateActive=scenario.startsWith('restart')?resurrects===1:packageVersion(options.env.CONTROL_PM2_ENGINE_CLI)===target;}
     return output;},
   healthTargets:async()=>[{name:'server-control--running'}],
   probeHealth:async()=>rollback!=='true'||!candidateActive,
@@ -204,7 +208,9 @@ process.stdout.write(JSON.stringify({status:result.status,rolled_back:result.rol
             assert job["rolled_back"] is True
         after = snapshot()
         assert after["version"] == (previous_version if rollback else target_version)
-        assert counts() == baseline, "inactive app executed during engine update/rollback"
+        assert counts() == baseline, "inactive app executed during engine update/restart/rollback"
+        if scenario.startswith("restart"):
+            assert int((runtime / "pm2/pm2.pid").read_text()) != daemon_before
         for item in after["processes"]:
             if item["name"] == "server-control--running":
                 assert item["status"] == "online" and item["pid"] > 0

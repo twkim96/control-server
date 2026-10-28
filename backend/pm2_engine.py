@@ -76,14 +76,14 @@ class Pm2Engine:
             owned_running = self._child is not None and self._child.pid == job.get("pid") and self._child.poll() is None
             if job.get("status") == "running" and not owned_running and not self._job_alive(job):
                 job = {**job, "status": "failed", "phase": "complete",
-                       "message": "업데이트가 중단됐습니다. 업데이트 버튼으로 복구를 다시 시도하세요."}
+                       "message": "엔진 작업이 중단됐습니다. 재시작 또는 업데이트 버튼으로 복구를 다시 시도하세요."}
             job = {key: value for key, value in job.items() if key not in {"pid"}}
         else:
             job = None
         needs_recovery = (self.root / "recovery.json").exists()
         return {
             "supported": self._supported(),
-            "reason": None if self._supported() else "이 설치에서는 PM2 엔진 업데이트를 사용할 수 없습니다.",
+            "reason": None if self._supported() else "이 설치에서는 PM2 엔진 관리를 사용할 수 없습니다.",
             "current_version": current, "daemon_version": daemon,
             "latest_version": latest.get("version"), "checked_at": latest.get("checked_at"),
             "update_available": bool(needs_recovery or
@@ -114,13 +114,16 @@ class Pm2Engine:
             raise EngineError("최신 PM2 버전을 확인하지 못했습니다. 잠시 후 다시 시도하세요.")
         return self.status()
 
-    def start(self):
+    def start(self, operation="update"):
+        if operation not in {"update", "restart"}:
+            raise EngineError("지원하지 않는 PM2 엔진 작업입니다.")
+        label = "재시작" if operation == "restart" else "업데이트"
         with self._lock:
             if not self._supported():
-                raise EngineError("이 설치에서는 PM2 엔진 업데이트를 사용할 수 없습니다.")
+                raise EngineError("이 설치에서는 PM2 엔진 관리를 사용할 수 없습니다.")
             job = self.status().get("job")
             if (self._child is not None and self._child.poll() is None) or (job and job["status"] == "running"):
-                raise EngineError("PM2 업데이트가 이미 진행 중입니다.")
+                raise EngineError("PM2 엔진 작업이 이미 진행 중입니다.")
             self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
             self.root.chmod(0o700)
             job_id = uuid.uuid4().hex
@@ -128,20 +131,24 @@ class Pm2Engine:
             self._pending_previous_id = previous.get("id") if isinstance(previous, dict) else None
             try:
                 # Bind the job to the version that was checked before submission.
-                expected = self.status().get("latest_version")
+                expected = self.status().get("latest_version") if operation == "update" else None
                 if expected is not None and (not isinstance(expected, str) or not re.fullmatch(r"\d+\.\d+\.\d+", expected)):
                     raise EngineError("PM2 목표 버전을 다시 확인하세요.")
-                child = subprocess.Popen(self._arguments("update", job_id),
+                child_env = {**os.environ}
+                child_env.pop("CONTROL_PM2_EXPECTED_VERSION", None)
+                if expected:
+                    child_env["CONTROL_PM2_EXPECTED_VERSION"] = expected
+                child = subprocess.Popen(self._arguments(operation, job_id),
                                          stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                          stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True,
-                                         env={**os.environ, **({"CONTROL_PM2_EXPECTED_VERSION": expected} if expected else {})})
+                                         env=child_env)
             except OSError as exc:
-                raise EngineError("PM2 업데이트를 시작하지 못했습니다.") from exc
+                raise EngineError(f"PM2 {label} 작업을 시작하지 못했습니다.") from exc
             self._child = child
             # The updater owns persisted status. An immediate response can precede its first write.
             status = self.status()
-            self._pending = {"id": job_id, "status": "running", "phase": "checking",
-                             "message": "업데이트를 준비하고 있습니다.",
+            self._pending = {"id": job_id, "operation": operation, "status": "running", "phase": "checking",
+                             "message": f"{label} 준비 중입니다.",
                              "started_at": datetime.now(timezone.utc).isoformat()}
             status["job"] = self._pending
             return status

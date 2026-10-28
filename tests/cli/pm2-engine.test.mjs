@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { engineLayout, updateEngine, statesMatch, validateSnapshot, packageVersion, runCaptured, writeSafeRestoreDump } from "../../lib/pm2-engine.mjs";
+import { engineLayout, updateEngine, restartEngine, statesMatch, validateSnapshot, packageVersion, runCaptured, writeSafeRestoreDump } from "../../lib/pm2-engine.mjs";
 import { withFileLock, withManagedLock, atomicWriteJson } from "../../lib/transaction.mjs";
 import { parseArgs } from "../../lib/cli.mjs";
 
@@ -68,7 +68,7 @@ async function fixture(callback) {
       setState: (next) => { state = next; },
       noCandidateVersion: () => { applyCandidate = false; },
       stopRunningDuringUpdate: () => { candidateStopsRunning = true; },
-      failRollback: () => { failRecovery = true; },
+      failRollback: (enabled = true) => { failRecovery = enabled; },
     });
   } finally { await fs.promises.rm(root, { recursive: true, force: true }); }
 }
@@ -321,4 +321,59 @@ test('precommit restore and reporting failure retain the recovery journal for th
   const result=await updateEngine(f.options);
   assert.equal(result.rolled_back,true);
   assert.equal(fs.existsSync(f.layout.recovery),false);
+}));
+
+for (const external of [false, true]) {
+  test(`explicit restart preserves state and selection without registry/install (${external ? 'independent' : 'bundled'})`, async () => fixture(async (f) => {
+    const bundled = path.join(f.appRoot, 'ops/pm2');
+    const target = path.join(f.layout.releases, '7.0.3');
+    if (external) {
+      await fs.promises.mkdir(f.layout.releases, {recursive:true});
+      await fs.promises.cp(bundled, target, {recursive:true});
+      await fs.promises.symlink(target, f.layout.current);
+    }
+    f.hooks.latest = async () => { throw new Error('restart must not contact registry'); };
+    f.hooks.install = async () => { throw new Error('restart must not install'); };
+    const before = structuredClone(f.state());
+    const result = await restartEngine({...f.options, expectedVersion:'999.0.0'});
+    assert.equal(result.status, 'succeeded');
+    assert.equal(result.operation, 'restart');
+    assert.equal(result.from_version, '7.0.3');
+    assert.equal(result.target_version, '7.0.3');
+    assert.equal(f.state().version, before.version);
+    assert.notEqual(f.state().processes[0].pid, before.processes[0].pid);
+    assert.equal(statesMatch(before, f.state()), true);
+    assert.deepEqual(f.commands.map(x=>x.args[0]), ['save', 'kill', 'resurrect']);
+    assert.equal(external ? fs.realpathSync(f.layout.current) : fs.existsSync(f.layout.current), external ? target : false);
+    assert.equal(fs.existsSync(f.layout.recovery), false);
+    assert.equal(fs.existsSync(f.layout.owner), false);
+  }));
+}
+
+test('restart health failure restores the same installed engine and retains stopped intent', async () => fixture(async (f) => {
+  f.hooks.healthTargets = async () => [{name:'server-control--running'}];
+  f.hooks.probeHealth = async () => f.commands.filter(x=>x.args[0]==='resurrect').length !== 1;
+  f.hooks.latest = async () => { throw new Error('unexpected registry request'); };
+  const before = structuredClone(f.state());
+  const result = await restartEngine(f.options);
+  assert.equal(result.status, 'failed');
+  assert.equal(result.operation, 'restart');
+  assert.equal(result.rolled_back, true);
+  assert.equal(statesMatch(before, f.state()), true);
+  assert.equal(f.commands.filter(x=>x.args[0]==='kill').length, 2);
+  assert.equal(fs.existsSync(f.layout.recovery), false);
+}));
+
+test('restart resumes an interrupted transaction before attempting another cutover', async () => fixture(async (f) => {
+  f.noCandidateVersion(); f.failRollback();
+  assert.equal((await updateEngine(f.options)).rolled_back, false);
+  f.failRollback(false);
+  f.hooks.latest = async () => { throw new Error('recovery must not contact registry'); };
+  const result = await restartEngine(f.options);
+  assert.equal(result.status, 'failed');
+  assert.equal(result.operation, 'restart');
+  assert.equal(result.rolled_back, true);
+  assert.equal(f.state().version, '7.0.3');
+  assert.equal(fs.existsSync(f.layout.recovery), false);
+  assert.equal(fs.existsSync(f.layout.owner), false);
 }));

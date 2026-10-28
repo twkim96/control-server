@@ -1,6 +1,6 @@
 # 독립 PM2 엔진
 
-## 명시적 업데이트
+## 명시적 업데이트와 재시작
 
 앱 번들의 PM2 7.1.1은 고정 fallback입니다. 사용자가 별도로 설치한 엔진은
 `runtime/pm2-engine/releases/<version>`에 두고 `runtime/pm2-engine/current`로 선택합니다.
@@ -13,6 +13,13 @@ Settings를 열면 상태 GET 뒤 최신 버전 확인을 한 번 수행합니�
 `control-server pm2 update [--home PATH] [--to EXPECTED_VERSION]`로만 요청합니다. 지원되지 않는 backend/설치나
 필수 Node/worker 부재는 상태의 `supported`/`reason`으로 설명합니다.
 
+`PM2 재시작` 버튼은 설치된 엔진으로 daemon을 교체하고 실행 중이던 관리 서비스를
+복원합니다. 최신 버전 확인이나 패키지 설치 없이 실행하며 선택 엔진 pointer를 유지합니다.
+업데이트는 설치 후 같은 재시작·복원·검증을 자동 수행하므로 별도 재시작이 필요 없습니다.
+버전 변경이 없는 업데이트 재요청은 기존처럼 불필요한 재시작을 생략합니다.
+두 동작은 controller가 background worker로 실행하며, 같은 관리/maintenance 잠금으로
+서비스 조작과 상호 중복 실행을 차단합니다.
+
 상태에는 선택 엔진, 실제 daemon 버전, 마지막 최신 확인과 background job이 있습니다.
 앱 release 변경과 엔진 변경의 수명주기를 혼동하지 않습니다.
 API 보호와 202/최종 job 판정은 [HTTP API](../../API.md#pm2-엔진-관리-153)에 정의합니다.
@@ -22,7 +29,9 @@ API 보호와 202/최종 job 판정은 [HTTP API](../../API.md#pm2-엔진-관리
 새 엔진을 먼저 준비하고 전용 daemon과 서비스 snapshot을 복원합니다. controller는
 launchd 아래에 남으며 관리 서비스에는 짧은 재시작이 발생할 수 있습니다. 성공은 실제
 daemon 버전, 이전 실행/중지 상태와 전환 전에 정상인 health target을 확인한 결과입니다.
-동일 엔진의 재요청으로 정상 실행 PID를 불필요하게 교체하지 않습니다.
+동일 엔진의 업데이트 재요청으로 정상 실행 PID를 불필요하게 교체하지 않습니다.
+명시적 재시작은 버전이 같아도 daemon과 실행 서비스 PID를 교체합니다.
+중지/오류 항목과 PM2 밖의 외부 인스턴스는 시작하거나 종료하지 않습니다.
 
 엔진 cutover는 `recovery.json` journal을 사용합니다. 실패 시 이전 엔진과 snapshot으로
 복구를 시도하고 미완료 journal은 보존합니다. 다음 명시적 요청은 복구를 먼저 수행할 수

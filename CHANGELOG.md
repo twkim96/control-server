@@ -5,6 +5,27 @@ the 1.5.0 public distribution release onward.
 
 ## [Unreleased]
 
+### Added
+
+- add a Settings PM2 restart button and authenticated, CSRF-protected restart API, using
+  the selected installed engine without a registry check or package installation
+- share serialized snapshot, safe daemon replacement, inactive-state preservation,
+  health verification and rollback between restart and update; expose the job operation
+- label updates as update-and-restart: installing a new engine automatically restarts it
+  and restores running services; repeated updates to the current version remain a no-op
+
+
+### Managed acceptance (1.6.4, 2026-10-28)
+
+- applied the Settings restart controls through the managed updater and verified the live
+  restart button is enabled while the current-version update button remains disabled
+- controller activation preserved the PM2 daemon, all six managed service PIDs and healthy
+  responses, the external instance, inactive services and private configuration
+- isolated real PM2 upgrade/restart/rollback cases preserved inactive launch counts;
+  API/engine regressions, frontend build/lint and package inspection passed
+- the production restart button was not invoked; production engine restart, long-term
+  recovery and client-quit independence remain separate acceptance work
+
 ### Managed acceptance (1.6.3, 2026-10-28)
 
 - applied the framework Python identity and compact Runtime fixes through the managed updater

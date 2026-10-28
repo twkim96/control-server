@@ -73,6 +73,7 @@ def _login(harness):
     ("get", "/api/system/pm2"),
     ("post", "/api/system/pm2/check"),
     ("post", "/api/system/pm2/update"),
+    ("post", "/api/system/pm2/restart"),
 ])
 def test_engine_endpoints_require_authentication(harness, method, path):
     assert getattr(harness.client, method)(path).status_code == 401
@@ -80,7 +81,7 @@ def test_engine_endpoints_require_authentication(harness, method, path):
     harness.spawn.assert_not_called()
 
 
-@pytest.mark.parametrize("path", ["/api/system/pm2/check", "/api/system/pm2/update"])
+@pytest.mark.parametrize("path", ["/api/system/pm2/check", "/api/system/pm2/update", "/api/system/pm2/restart"])
 def test_engine_mutations_require_valid_csrf(harness, path):
     _login(harness)
     assert harness.client.post(path).status_code == 403
@@ -138,25 +139,31 @@ def test_check_refreshes_cached_version_with_authorized_post(harness):
     harness.spawn.assert_not_called()
 
 
-def test_update_starts_detached_job_and_rejects_duplicate(harness):
+@pytest.mark.parametrize("operation", ["update", "restart"])
+def test_engine_job_starts_detached_and_blocks_both_mutations(harness, operation):
     headers = _login(harness)
     child = Mock(pid=23456)
     child.poll.return_value = None
     harness.spawn.side_effect = None
     harness.spawn.return_value = child
-    response = harness.client.post("/api/system/pm2/update", headers=headers)
+    response = harness.client.post(f"/api/system/pm2/{operation}", headers=headers)
     assert response.status_code == 202
     job = response.get_json()["job"]
     assert job["status"] == "running"
+    assert job["operation"] == operation
     assert job["id"]
     assert job["started_at"]
     assert "pid" not in job
     argv = harness.spawn.call_args.args[0]
-    assert argv[2] == "update"
+    assert argv[2] == operation
     assert argv[-1] == job["id"]
-    assert harness.spawn.call_args.kwargs["env"]["CONTROL_PM2_EXPECTED_VERSION"] == "6.0.1"
+    if operation == "update":
+        assert harness.spawn.call_args.kwargs["env"]["CONTROL_PM2_EXPECTED_VERSION"] == "6.0.1"
+    else:
+        assert "CONTROL_PM2_EXPECTED_VERSION" not in harness.spawn.call_args.kwargs["env"]
     assert harness.spawn.call_args.kwargs["start_new_session"] is True
     assert harness.client.post("/api/system/pm2/update", headers=headers).status_code == 409
+    assert harness.client.post("/api/system/pm2/restart", headers=headers).status_code == 409
     harness.spawn.assert_called_once()
     # Simulate the detached updater publishing progress, then a new controller instance.
     _write_json(harness.engine.root / "job.json", {
@@ -170,10 +177,12 @@ def test_update_starts_detached_job_and_rejects_duplicate(harness):
     harness.engine._child = None
     saved = harness.client.get("/api/system/pm2").get_json()["job"]
     assert saved["id"] == job["id"]
+    assert saved["operation"] == operation
     assert saved["phase"] == "installing"
     assert saved["status"] == "running"
     assert "pid" not in saved
     assert harness.client.post("/api/system/pm2/update", headers=headers).status_code == 409
+    assert harness.client.post("/api/system/pm2/restart", headers=headers).status_code == 409
     harness.spawn.assert_called_once()
 
 
@@ -218,6 +227,7 @@ def test_native_backend_reports_unsupported_without_launching(harness):
     assert response.get_json()["reason"]
     assert harness.client.post("/api/system/pm2/check", headers=headers).status_code == 503
     assert harness.client.post("/api/system/pm2/update", headers=headers).status_code == 409
+    assert harness.client.post("/api/system/pm2/restart", headers=headers).status_code == 409
     harness.run.assert_not_called()
     harness.spawn.assert_not_called()
 
@@ -287,4 +297,20 @@ def test_persisted_cli_update_job_stays_running(harness):
     assert "pid" not in job
     assert harness.client.post("/api/system/pm2/update", headers=headers).status_code == 409
     harness.spawn.assert_not_called()
+    harness.run.assert_not_called()
+
+
+def test_restart_ignores_cached_or_inherited_update_target(harness, monkeypatch):
+    headers = _login(harness)
+    monkeypatch.setenv('CONTROL_PM2_EXPECTED_VERSION', '999.0.0')
+    _write_json(harness.engine.root / 'latest.json', {'version': {'invalid': True}})
+    child = Mock(pid=24680)
+    child.poll.return_value = None
+    harness.spawn.side_effect = None
+    harness.spawn.return_value = child
+    result = harness.client.post('/api/system/pm2/restart', headers=headers)
+    assert result.status_code == 202
+    assert result.get_json()['job']['operation'] == 'restart'
+    assert harness.spawn.call_args.args[0][2] == 'restart'
+    assert 'CONTROL_PM2_EXPECTED_VERSION' not in harness.spawn.call_args.kwargs['env']
     harness.run.assert_not_called()

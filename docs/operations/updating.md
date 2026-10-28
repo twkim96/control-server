@@ -110,6 +110,16 @@ node "$HOME/.control-server/current/bin/control-server.mjs" pm2 update \
   --home "$HOME/.control-server"
 ```
 
+Settings → PM2 provides **PM2 재시작** for restarting the selected installed engine without
+checking or downloading a new version. **업데이트 및 재시작** installs a newer engine and
+then automatically restarts it, restores running services and verifies their health. A separate
+restart after a successful update is unnecessary. Updating an already current engine remains
+a no-op; use the restart button when an explicit restart is intended.
+
+Both buttons submit work to the running controller and share the engine recovery journal
+and management locks. Stopped/errored entries remain inactive and unmanaged instances are
+not signaled. Restarting the controller alone does not restart an already running PM2 daemon.
+
 Opening settings checks the latest engine once; installation/cutover requires an explicit
 update action. The app and engine pointers are separate. See the
 [engine specification](../SPEC/pm2-engine.md), [HTTP API](../../API.md#pm2-엔진-관리-153)

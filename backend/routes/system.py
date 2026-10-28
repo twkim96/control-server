@@ -42,6 +42,16 @@ def pm2_update():
         return jsonify({"error": "pm2_update_unavailable", "message": str(exc)}), 409
 
 
+@bp.post("/pm2/restart")
+@auth_required
+@csrf_required
+def pm2_restart():
+    try:
+        return jsonify(current_app.config["pm2_engine"].start(operation="restart")), 202
+    except EngineError as exc:
+        return jsonify({"error": "pm2_restart_unavailable", "message": str(exc)}), 409
+
+
 @bp.get("/python_interpreters")
 @auth_required
 def python_interpreters():

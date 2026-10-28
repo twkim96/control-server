@@ -88,7 +88,10 @@ curl -sS -b "$COOKIE_JAR" \
 | --- | --- | --- | --- |
 | GET | `/api/system/pm2` | 세션 | 현재 엔진·daemon·마지막 최신 확인 결과·작업 상태 |
 | POST | `/api/system/pm2/check` | 세션+CSRF | 최신 버전 확인 |
-| POST | `/api/system/pm2/update` | 세션+CSRF | 엔진 업데이트 또는 중단된 복구를 백그라운드로 시작 |
+| POST | `/api/system/pm2/update` | 세션+CSRF | 엔진 설치·자동 재시작·복원 또는 중단된 복구를 백그라운드로 시작 |
+| POST | `/api/system/pm2/restart` | 세션+CSRF | 설치된 엔진으로 재시작·복원 또는 중단된 복구를 백그라운드로 시작 |
+
+`restart` POST와 `job.operation`은 1.6.4부터 제공합니다.
 
 요청 본문은 필요하지 않습니다. GET 자체는 최신 버전을 조회하지 않습니다. 설정 화면은
 상태 GET 뒤 check POST를 한 번 자동 호출하고, 확인 버튼으로 수동 갱신합니다. update POST는
@@ -98,7 +101,13 @@ curl -sS -b "$COOKIE_JAR" \
 `null`일 수 있습니다. `current_version`은 선택된 설치 버전이고 `daemon_version`은
 실제 실행 중인 daemon에서 확인한 버전으로, 두 값이 다를 수 있습니다.
 
-웹 작업은 마지막으로 확인한 목표 버전에 결합하며, worker가 확인한 최신 버전이 다르면
+재시작은 registry 조회·패키지 설치 없이 현재 선택 엔진을 사용합니다. 버전이 같아도
+daemon과 실행 중인 관리 서비스를 재시작하고 중지/오류 항목은 실행하지 않습니다.
+업데이트는 새 엔진 설치 뒤 재시작·복원·검증까지 자동 수행합니다. 최신 버전이 이미
+적용됐다면 업데이트 재요청은 재시작을 생략합니다. 두 작업은 동일 잠금으로 직렬화합니다.
+`job.operation`은 `update` 또는 `restart`이며 기존 기록에는 없을 수 있습니다.
+
+업데이트 작업은 마지막으로 확인한 목표 버전에 결합하며, worker가 확인한 최신 버전이 다르면
 설치·전환 전에 실패합니다. 다시 확인한 뒤 새 작업을 요청합니다.
 
 확정한 전환·복구의 완료 기록 저장에 실패하면 `job.reporting_error`는
@@ -106,10 +115,10 @@ curl -sS -b "$COOKIE_JAR" \
 추가 kill/rollback하지 않습니다. 계속 저장 불가 시 상태 GET은 이전 job을 볼 수 있으므로
 실제 daemon 버전과 서비스를 다시 확인합니다.
 
-업데이트 시작 응답은 HTTP **202**이며 완료를 의미하지 않습니다. 같은 GET으로 `job`을
+업데이트·재시작 시작 응답은 HTTP **202**이며 완료를 의미하지 않습니다. 같은 GET으로 `job`을
 다시 읽고 `status` (`running`, `succeeded`, `failed`), `phase`, `message`, 선택적
 `error`, `rolled_back`을 확인합니다. 작업 시작 불가·중복 작업은
-`pm2_update_unavailable`/409, 최신 확인 실패는 `pm2_check_failed`/503입니다.
+각각 `pm2_update_unavailable` 또는 `pm2_restart_unavailable`/409, 최신 확인 실패는 `pm2_check_failed`/503입니다.
 
 앱의 launchd 프로세스는 엔진 전환에 포함되지 않습니다. 관리 서비스는 잠시 재시작될 수
 있으며, 중지 상태 보존·실제 daemon 버전·전환 전 정상인 health 대상의 응답을 검증합니다.
